@@ -91,8 +91,53 @@ def test_execute_end_to_end(make_store_task):
     ctx = RunContext(task=task, store=store)
     text, summary, extra = agent._execute(ctx, None)
     assert ctx.solution_executed is True
-    assert "manifest" in summary or "manifest" in text or True
+    assert "成功" in summary  # solution_executed=True 时汇总标记成功
     import json as _j
     manifest = _j.loads(text)
     assert manifest["subproblems"][0]["id"] == "sub1"
     assert store.read_solution_file(task.meta.task_id, "output.txt") != ""
+
+
+def test_execute_self_critique_retry_feeds_issues(make_store_task):
+    """自查不通过 -> 带提示重生成：验证 issues 通过 hint 回填到 _gen_code 调用。
+
+    覆盖 _execute 中 `for _ in range(max_critique + 1)` 的重试分支：
+    首次自查 failed -> _run_stage(..., hint="自查不通过：" + issues) -> _gen_code(hint=...)
+    -> 重生成代码成功 -> 二次自查 passed。
+    """
+    store, task = make_store_task("题目")
+    plan_json = '{"subproblems":[{"id":"sub1","title":"t","goal":"g","stages":[{"name":"solve","goal":"g","input_files":[],"output_file":"result.json","method":"m","figures":[]}]}]}'
+    # FakeLLM 响应序列（顺序对应 _execute 的 LLM 调用）：
+    # 0 plan
+    # 1 GOOD_CODE（首次 _gen_code，无 hint）
+    # 2 自查不通过（passed:false, issues=["结果方向不对"]）
+    # 3 GOOD_CODE（带 hint 重生成 _gen_code —— 被断言的调用）
+    # 4 自查通过（passed:true）
+    # 5 aggregate 汇总
+    agent = SolverAgent(task, store, llm=FakeLLM([
+        f"```json\n{plan_json}\n```",
+        GOOD_CODE,
+        '```json\n{"passed": false, "issues": ["结果方向不对"], "suggestion": ""}\n```',
+        GOOD_CODE,
+        '```json\n{"passed": true, "issues": [], "suggestion": ""}\n```',
+        "汇总：结果一致",
+    ]))
+    from app.agents.base import RunContext
+    ctx = RunContext(task=task, store=store)
+    agent._execute(ctx, None)
+    # 重试后整体成功
+    assert ctx.solution_executed is True
+    # 关键：hint 真正回填到重生成 _gen_code 的 user 消息
+    # 恰好一次调用的 user content 同时含 "自查不通过" 与 issue 文本
+    hits = [
+        c for c in agent.llm.calls
+        if any(m.get("role") == "user" and "自查不通过" in m.get("content", "")
+               and "结果方向不对" in m.get("content", "") for m in c)
+    ]
+    assert len(hits) == 1, (
+        f"期望恰好 1 次带 hint 的 _gen_code 调用，实际 {len(hits)}；"
+        f"calls={[[m.get('content','')[:60] for m in c] for c in agent.llm.calls]}"
+    )
+    # 第 4 次 LLM 调用（索引 3）正是带 hint 的重生成 _gen_code
+    regen_user = agent.llm.calls[3][1]["content"]
+    assert "自查不通过" in regen_user and "结果方向不对" in regen_user
