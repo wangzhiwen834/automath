@@ -251,11 +251,11 @@ class TaskStore:
         """写 Agent 产物，返回相对任务目录的路径。"""
         name = ARTIFACT_NAMES[agent]
         if agent == AgentName.SOLVER:
-            # solver 产物是目录，content 写到 solve.py
+            # solver 产物是目录；此处写 manifest.json 作为入口产物
             sol_dir = self._solution_dir(task_id)
-            path = sol_dir / "solve.py"
+            path = sol_dir / "manifest.json"
             self._atomic_write_text(path, content)
-            return "artifacts/solution/solve.py"
+            return "artifacts/solution/manifest.json"
         else:
             path = self._artifacts_dir(task_id) / name
             self._atomic_write_text(path, content)
@@ -273,6 +273,23 @@ class TaskStore:
 
     def solution_dir(self, task_id: str) -> Path:
         return self._solution_dir(task_id)
+
+    def subproblem_dir(self, task_id: str, sub_id: str) -> Path:
+        d = self._solution_dir(task_id) / sub_id
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def write_solution_file(self, task_id: str, name: str, content: str) -> str:
+        path = self._solution_dir(task_id) / name
+        self._atomic_write_text(path, content)
+        return f"artifacts/solution/{name}"
+
+    def read_solution_file(self, task_id: str, name: str) -> str:
+        path = self._solution_dir(task_id) / name
+        if not path.exists():
+            return ""
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
 
     def write_solution_output(self, task_id: str, stdout: str, stderr: str = "") -> None:
         sol = self._solution_dir(task_id)
