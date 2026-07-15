@@ -20,3 +20,34 @@ def test_make_plan_fallback_on_bad_json(make_store_task):
     agent = SolverAgent(task, store, llm=FakeLLM(["不是JSON"]))
     plan = agent._make_plan(None)
     assert "solve" in [s["name"] for s in plan["subproblems"][0]["stages"]]
+
+
+GOOD_CODE = (
+    "import json\n"
+    "open('result.json','w').write('{}')\n"
+    'print("STAGE_RESULT:", json.dumps({"ok": True, "metrics": {"z": 1.0}, "files": ["result.json"], "figures": []}))\n'
+)
+BAD_CODE = "raise ValueError('boom')"
+
+
+def test_run_stage_success(make_store_task):
+    store, task = make_store_task("题目")
+    # FakeLLM: 第一次生成 GOOD_CODE
+    agent = SolverAgent(task, store, llm=FakeLLM([GOOD_CODE]))
+    sub = {"id": "sub1", "stages": []}
+    stage = {"name": "solve", "goal": "g", "input_files": [], "output_file": "result.json",
+             "method": "m", "figures": [], "expected_range": None}
+    out = agent._run_stage(None, sub, stage)
+    assert out["ok"] is True
+    assert out["stage_result"]["metrics"]["z"] == 1.0
+
+
+def test_run_stage_fail_bounded(make_store_task):
+    store, task = make_store_task("题目")
+    # 生成坏代码 -> 修复仍坏 -> 修复仍坏（超过 max_stage_retries）
+    agent = SolverAgent(task, store, llm=FakeLLM([BAD_CODE, BAD_CODE, BAD_CODE]))
+    sub = {"id": "sub1", "stages": []}
+    stage = {"name": "solve", "goal": "g", "input_files": [], "output_file": "result.json",
+             "method": "m", "figures": [], "expected_range": None}
+    out = agent._run_stage(None, sub, stage)
+    assert out["ok"] is False

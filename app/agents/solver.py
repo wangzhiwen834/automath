@@ -1,10 +1,9 @@
-"""求解师 Agent：根据模型 → 生成 Python 求解代码 → 实际执行 → 捕获结果。
+"""求解师 Agent：分阶段生成 Python 求解代码并实际执行、硬校验、有界修复。
 
-加固点:
-1. py_compile 语法预检：语法错直接反馈修复（不走完整执行，省时）。
-2. 执行 → 失败 → 反馈修复，循环最多 3 次。
-3. 写 status.json 记录执行是否成功，供审查师硬否决。
-4. prompt 限制代码长度、禁用画图、避免中文字符串编码问题。
+每个子问题的每个阶段独立走 _run_stage 流水线：
+生成代码 -> 注入可复现前导 -> py_compile 语法预检 -> subprocess 执行 ->
+解析 STAGE_RESULT -> 硬检查（有限值/输出文件/图表）；失败则反馈修复，最多
+max_regen_per_stage 次。
 
 ⚠️ 安全：直接 subprocess 执行 LLM 生成代码，生产环境建议 Docker 沙箱。
 """
@@ -107,93 +106,38 @@ class SolverAgent(BaseAgent):
         )
 
     # ----------------------------------------------------------
-    # 后处理：提取 → 语法预检 → 执行 → 失败修复，写 status.json
+    # 阶段执行流水线：生成 -> 语法预检 -> 执行 -> 硬校验 -> 有界修复
     # ----------------------------------------------------------
-    def postprocess(self, ctx, text: str) -> tuple[str, str, dict]:
-        code = extract_python(text)
-        max_attempts = 3
-        stdout, stderr, executed = "", "", False
-        fix_attempts = 0
-        last_error = ""
+    def _gen_code(self, sub, stage, prev_outputs: str) -> str:
+        prompt = (
+            f"为子问题 {sub['id']}（{sub.get('title','')}）的阶段【{stage['name']}】写 Python 代码。\n"
+            f"阶段目标：{stage['goal']}\n方法：{stage['method']}\n"
+            f"输入文件（在当前工作目录读取）：{stage.get('input_files')}\n"
+            f"输出文件：{stage.get('output_file') or '（无）'}\n"
+            f"预期图表：{stage.get('figures')}\n\n"
+            "硬性要求：\n"
+            "- 只输出一个 ```python 代码块；matplotlib 用英文标签；画图 savefig 到 artifacts/figures/<名> 后 close。\n"
+            "- 代码末尾必须 print 一行 `STAGE_RESULT: <json>`，含 ok(布尔)/metrics(数值dict)/files(产出文件名list)/figures(图文件名list)。\n"
+            "- 用相对路径读写文件（当前工作目录即本子问题目录）。\n\n"
+            f"上游可用信息：\n{prev_outputs}\n"
+        )
+        text = self.llm.chat([Message("system", self.system_prompt), Message("user", prompt)])
+        return extract_python(text)
 
-        for attempt in range(max_attempts):
-            # 1) 语法预检
-            syn_ok, syn_err = self._syntax_check(code)
-            if not syn_ok:
-                last_error = f"[语法错误] {syn_err}"
-                self.store.append_log(
-                    self.task.meta.task_id, self.name.value,
-                    {"type": "syntax_error", "attempt": attempt + 1, "error": syn_err[:1500]},
-                )
-                if attempt < max_attempts - 1:
-                    fix_attempts += 1
-                    code = self._fix_code(code, last_error)
-                    continue
-                break
+    def _fix_code(self, code: str, error: str) -> str:
+        msg = [
+            Message("system", self.system_prompt),
+            Message("user", (
+                "之前代码有问题，请修复后输出完整代码（仍只一个代码块，末尾保留 STAGE_RESULT 行）。\n\n"
+                f"【原代码】\n```python\n{code}\n```\n\n【问题】\n{error}\n"
+            )),
+        ]
+        return extract_python(self.llm.chat(msg))
 
-            # 2) 执行
-            stdout, stderr, executed = self._execute(code)
-            if executed:
-                last_error = ""
-                break
-            last_error = stderr[:2000] or "执行返回非零退出码"
-            self.store.append_log(
-                self.task.meta.task_id, self.name.value,
-                {"type": "exec_error", "attempt": attempt + 1, "error": last_error},
-            )
-            if attempt < max_attempts - 1:
-                fix_attempts += 1
-                code = self._fix_code(code, last_error)
-
-        # 落盘代码、输出、状态
-        self.store.write_artifact(self.task.meta.task_id, self.name, code)
-        self.store.write_solution_output(self.task.meta.task_id, stdout, stderr)
-        self._write_status(executed, last_error)
-
-        # 塞进 ctx 供下游
-        ctx.solution_stdout = stdout if executed else None
-        ctx.solution_stderr = stderr
-        ctx.solution_executed = executed
-        ctx.solution_error = last_error if not executed else None
-        ctx.figures = self.store.list_figures(self.task.meta.task_id)
-
-        if executed:
-            n_fig = len(ctx.figures)
-            summary = f"求解执行成功，输出 {len(stdout.splitlines())} 行结果，生成 {n_fig} 张图"
-        else:
-            summary = f"求解代码执行失败（{fix_attempts} 次修复未成功）"
-        return code, summary, {
-            "stdout": stdout, "stderr": stderr,
-            "executed": executed, "fix_attempts": fix_attempts,
-            "error": last_error, "figures": ctx.figures,
-        }
-
-    # ----------------------------------------------------------
-    def _syntax_check(self, code: str) -> tuple[bool, str | None]:
-        sol_dir = self.store.solution_dir(self.task.meta.task_id)
-        script = sol_dir / "solve.py"
-        with open(script, "w", encoding="utf-8") as f:
-            f.write(code)
-        try:
-            py_compile.compile(str(script), doraise=True)
-            return True, None
-        except py_compile.PyCompileError as e:
-            return False, str(e)
-        except SyntaxError as e:
-            return False, f"{e.msg} (line {e.lineno})"
-
-    def _execute(self, code: str) -> tuple[str, str, bool]:
-        # cwd = 任务根目录，使 'artifacts/figures/' 与 'data/' 相对路径生效
-        sol_dir = self.store.solution_dir(self.task.meta.task_id)
-        script = sol_dir / "solve.py"
-        with open(script, "w", encoding="utf-8") as f:
-            f.write(code)
-        cwd = str(self.store.task_path(self.task.meta.task_id))
-        timeout = get_settings().solver_config.get("execution_timeout", 60)
+    def _exec_script(self, script_path, cwd, timeout):
         try:
             proc = subprocess.run(
-                [sys.executable, str(script)],
-                cwd=cwd,
+                [sys.executable, str(script_path)], cwd=str(cwd),
                 capture_output=True, text=True, timeout=timeout,
                 encoding="utf-8", errors="replace",
             )
@@ -203,21 +147,47 @@ class SolverAgent(BaseAgent):
         except Exception as e:
             return "", f"执行异常: {e}", False
 
-    def _write_status(self, executed: bool, error: str) -> None:
-        sol_dir = self.store.solution_dir(self.task.meta.task_id)
-        status = {"executed": executed, "error": error or None}
-        with open(sol_dir / "status.json", "w", encoding="utf-8") as f:
-            json.dump(status, f, ensure_ascii=False, indent=2)
+    def _run_stage(self, ctx, sub, stage) -> dict:
+        tid = self.task.meta.task_id
+        cfg = get_settings().solver_config
+        seed = cfg.get("preamble_seed", 42)
+        max_regen = cfg.get("max_regen_per_stage", 3)
+        timeout = cfg.get("stage_execution_timeout", 120)
+        sub_dir = self.store.subproblem_dir(tid, sub["id"])
+        fig_dir = self.store.figures_dir(tid)
+        prev_outputs = ""  # 简化：阶段间靠工作目录文件交接；此处可附上阶段说明
 
-    def _fix_code(self, code: str, error: str) -> str:
-        messages = [
-            Message("system", self.system_prompt),
-            Message("user", (
-                "你之前生成的代码运行报错了，请修复后重新输出完整代码（仍只输出一个代码块）。\n\n"
-                f"【原代码】\n```python\n{code}\n```\n\n"
-                f"【报错信息】\n{error}\n\n"
-                "请输出修复后的完整 Python 代码。"
-            )),
-        ]
-        resp = self.llm.chat(messages)
-        return extract_python(resp)
+        code = ""
+        attempts = 0
+        last_error = ""
+        for _ in range(max_regen):
+            attempts += 1
+            code = self._gen_code(sub, stage, prev_outputs) if attempts == 1 else self._fix_code(code, last_error)
+            code = inject_preamble(code, seed=seed)
+            script = sub_dir / f"{stage['name']}.py"
+            script.write_text(code, encoding="utf-8")
+            # 语法预检
+            try:
+                py_compile.compile(str(script), doraise=True)
+            except (py_compile.PyCompileError, SyntaxError) as e:
+                last_error = f"[语法错误] {e}"
+                self.store.append_log(tid, self.name.value, {"type": "syntax_error", "stage": stage["name"], "error": str(e)[:800]})
+                continue
+            # 执行
+            stdout, stderr, ok = self._exec_script(script, sub_dir, timeout)
+            if not ok:
+                last_error = stderr[:1500] or "执行返回非零退出码"
+                self.store.append_log(tid, self.name.value, {"type": "exec_error", "stage": stage["name"], "error": last_error})
+                continue
+            sr = parse_stage_result(stdout)
+            hard_ok, errs = run_hard_checks(sr or {}, stage, sub_dir, fig_dir)
+            if hard_ok:
+                self.store.append_log(tid, self.name.value, {"type": "stage_done", "stage": stage["name"], "attempts": attempts})
+                return {"sub_id": sub["id"], "stage": stage["name"], "ok": True,
+                        "code": code, "stdout": stdout, "stage_result": sr,
+                        "figures": (sr or {}).get("figures", []), "attempts": attempts, "error": ""}
+            last_error = "硬检查失败: " + "; ".join(errs)
+            self.store.append_log(tid, self.name.value, {"type": "hard_check_fail", "stage": stage["name"], "error": last_error})
+        return {"sub_id": sub["id"], "stage": stage["name"], "ok": False,
+                "code": code, "stdout": "", "stage_result": None,
+                "figures": [], "attempts": attempts, "error": last_error}
