@@ -103,11 +103,14 @@ agent_models:
 # 求解 Agent 代码执行配置
 # ===================================================================
 solver:
-  # 执行超时（秒）
   execution_timeout: 60
-  # 工作目录（相对任务目录）
+  stage_execution_timeout: 120
   workdir: "artifacts/solution"
-  # 允许的 Python 标准库 + 第三方库
+  preamble_seed: 42
+  max_stage_retries: 2
+  max_critique_retries: 1
+  max_regen_per_stage: 3
+  self_critique_model: null
   allowed_packages:
     - numpy
     - pandas
@@ -117,6 +120,18 @@ solver:
     - networkx
     - sympy
     - pulp
+
+# ===================================================================
+# 写作 Agent 配置
+# ===================================================================
+writer:
+  min_section_chars:
+    abstract: 400
+    solving_sub: 600
+    default: 300
+  max_expand_sections: 4
+  consistency_check: true
+  consistency_model: null
 
 # ===================================================================
 # 审查 Agent 配置

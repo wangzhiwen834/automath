@@ -60,6 +60,7 @@ class Settings:
         self.agent_models: dict[str, str] = self._raw.get("agent_models", {})
         self.solver_config: dict[str, Any] = self._raw.get("solver", {})
         self.reviewer_config: dict[str, Any] = self._raw.get("reviewer", {})
+        self.writer_config: dict[str, Any] = self._raw.get("writer", {})
 
     def _resolve_workspace(self) -> Path:
         ws = self._raw.get("workspace_dir", "./workspace")
