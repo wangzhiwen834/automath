@@ -53,11 +53,11 @@ StreamCallback = Callable[[str], None]
 class BaseAgent:
     name: AgentName
 
-    def __init__(self, task: Task, store: TaskStore | None = None) -> None:
+    def __init__(self, task: Task, store: TaskStore | None = None, llm=None) -> None:
         self.task = task
         self.store = store or get_store()
         model_key = task.meta.agent_models.get(self.name.value)
-        self.llm = get_llm(model_key)
+        self.llm = llm if llm is not None else get_llm(model_key)
 
     # ----------------------------------------------------------
     # 子类实现
@@ -77,6 +77,24 @@ class BaseAgent:
         """
         summary = text.strip().split("\n", 1)[0][:80]
         return text, summary, {}
+
+    def _execute(
+        self,
+        ctx: RunContext,
+        stream_callback: StreamCallback | None,
+    ) -> tuple[str, str, dict]:
+        """默认实现：单次 stream + postprocess。多调用流水线子类覆盖本方法。"""
+        task_id = self.task.meta.task_id
+        tid = self.name.value
+        messages = [
+            Message("system", self.system_prompt),
+            Message("user", self.build_user_prompt(ctx)),
+        ]
+        self.store.append_log(task_id, tid, {"type": "messages", "messages": [
+            {"role": m["role"], "content": m["content"]} for m in messages
+        ]})
+        full_text = self._stream_and_log(ctx, messages, stream_callback)
+        return self.postprocess(ctx, full_text)
 
     # ----------------------------------------------------------
     # 模板方法
@@ -101,19 +119,7 @@ class BaseAgent:
         self.store.append_log(task_id, tid, {"type": "start", "model": rec.model})
 
         try:
-            messages = [
-                Message("system", self.system_prompt),
-                Message("user", self.build_user_prompt(ctx)),
-            ]
-            self.store.append_log(task_id, tid, {"type": "messages", "messages": [
-                {"role": m["role"], "content": m["content"]} for m in messages
-            ]})
-
-            # 流式调用，边收边写日志（合并小块，避免日志过多）
-            full_text = self._stream_and_log(ctx, messages, stream_callback)
-
-            # 后处理
-            artifact_text, summary, extra = self.postprocess(ctx, full_text)
+            artifact_text, summary, extra = self._execute(ctx, stream_callback)
 
             # 落盘
             artifact_path = self.store.write_artifact(task_id, self.name, artifact_text)
