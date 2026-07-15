@@ -12,26 +12,62 @@ from __future__ import annotations
 
 import json
 import py_compile
-import re
 import subprocess
 import sys
 
 from app.agents.base import BaseAgent
+from app.agents.solve_utils import (
+    extract_python, parse_stage_result, inject_preamble,
+    parse_plan, validate_plan, fallback_plan, run_hard_checks,
+)
 from app.config import get_settings
 from app.llm.provider import Message
 from app.storage import AgentName
 
 
-def extract_python(text: str) -> str:
-    """从 Markdown 回答中提取 Python 代码块。没有围栏就当全是代码。"""
-    fences = re.findall(r"```(?:python)?\s*\n(.*?)```", text, re.DOTALL)
-    if fences:
-        return "\n\n".join(fences).strip()
-    return text.strip()
-
-
 class SolverAgent(BaseAgent):
     name = AgentName.SOLVER
+
+    PLAN_PROMPT = (
+        "你是数学建模求解规划专家。根据题目、分析、模型，把问题拆成可独立求解的子问题，"
+        "并为每个子问题规划有序阶段（从 数据/建模/求解/分析/画图 中按需选取，至少含 solve，推荐含 plot）。\n\n"
+        "只输出一个 JSON 代码块，结构：\n"
+        "```json\n"
+        '{"subproblems":[{"id":"sub1","title":"","goal":"","stages":['
+        '{"name":"data|model|solve|analyze|plot","goal":"","input_files":[],"output_file":"","method":"","figures":[],"expected_range":null}]}]}\n'
+        "```\n"
+        "要求：id 用 sub1/sub2…；input_files 引用前一阶段的 output_file 或上传数据 data/<名>；"
+        "画图阶段把 figures 列出（文件名形如 sub1_1_curve.png）。只输出 JSON。"
+    )
+
+    def _make_plan(self, ctx) -> dict:
+        problem = self._problem(ctx) if ctx else ""
+        analysis = self._prior(ctx, AgentName.ANALYST) if ctx else ""
+        model = self._prior(ctx, AgentName.MODELER) if ctx else ""
+        data_info = ""
+        if ctx and ctx.data_files:
+            data_info = "已上传数据：data/" + ", data/".join(ctx.data_files)
+        messages = [
+            Message("system", self.PLAN_PROMPT),
+            Message("user", f"【题目】\n{problem}\n\n【分析】\n{analysis}\n\n【模型】\n{model}\n\n{data_info}\n请输出求解计划。"),
+        ]
+        text = self.llm.chat(messages)
+        plan = parse_plan(text)
+        if plan:
+            ok, errs = validate_plan(plan)
+            if ok:
+                self.store.write_solution_file(self.task.meta.task_id, "plan.json",
+                                               json.dumps(plan, ensure_ascii=False, indent=2))
+                self.store.append_log(self.task.meta.task_id, self.name.value,
+                                      {"type": "plan", "subproblems": len(plan["subproblems"])})
+                return plan
+        # 退化
+        fb = fallback_plan()
+        self.store.write_solution_file(self.task.meta.task_id, "plan.json",
+                                       json.dumps(fb, ensure_ascii=False, indent=2))
+        self.store.append_log(self.task.meta.task_id, self.name.value,
+                              {"type": "plan_fallback", "errors": errs if plan else "parse_failed"})
+        return fb
 
     @property
     def system_prompt(self) -> str:
