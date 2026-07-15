@@ -1,0 +1,30 @@
+# Web framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+websockets>=12.0
+
+# LLM clients (DeepSeek/Qwen/GLM all OpenAI-compatible)
+openai>=1.35.0
+anthropic>=0.34.0
+
+# Agent orchestration
+langgraph>=0.2.0
+
+# Config & utils
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+PyYAML>=6.0
+python-dotenv>=1.0.0
+
+# Paper export
+markdown>=3.6
+
+# Scientific stack (used by solver agent to run generated code)
+numpy
+pandas
+scipy
+matplotlib
+scikit-learn
+networkx
+sympy
+pulp

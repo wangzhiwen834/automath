@@ -1,0 +1,128 @@
+# ===================================================================
+# 数学建模多Agent系统 配置文件
+# ===================================================================
+
+# 工作目录：所有任务文件存这里（绝对路径或相对项目根）
+workspace_dir: "./workspace"
+
+# 默认模型：model_registry 中的 key
+default_model: "glm-4.7"
+
+# ===================================================================
+# 模型注册表
+# 每个模型定义 provider / base_url / model名 / api_key环境变量名
+# 国产三家都是 OpenAI 兼容接口，复用 openai-compatible provider
+# ===================================================================
+model_registry:
+  # ---------- DeepSeek ----------
+  deepseek-chat:
+    provider: "openai-compatible"
+    base_url: "https://api.deepseek.com/v1"
+    model: "deepseek-chat"
+    api_key_env: "DEEPSEEK_API_KEY"
+    max_tokens: 8192
+    temperature: 0.7
+
+  deepseek-reasoner:
+    provider: "openai-compatible"
+    base_url: "https://api.deepseek.com/v1"
+    model: "deepseek-reasoner"
+    api_key_env: "DEEPSEEK_API_KEY"
+    max_tokens: 16384
+    temperature: 0.5
+
+  # ---------- 通义千问 ----------
+  qwen-plus:
+    provider: "openai-compatible"
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model: "qwen-plus"
+    api_key_env: "DASHSCOPE_API_KEY"
+    max_tokens: 8192
+    temperature: 0.7
+
+  qwen-max:
+    provider: "openai-compatible"
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model: "qwen-max"
+    api_key_env: "DASHSCOPE_API_KEY"
+    max_tokens: 8192
+    temperature: 0.7
+
+  # ---------- 智谱 GLM ----------
+  glm-4.7:
+    provider: "openai-compatible"
+    base_url: "https://open.bigmodel.cn/api/paas/v4"
+    model: "glm-4.7"
+    api_key_env: "ZHIPU_API_KEY"
+    max_tokens: 8192
+    temperature: 0.7
+
+  glm-4-plus:
+    provider: "openai-compatible"
+    base_url: "https://open.bigmodel.cn/api/paas/v4"
+    model: "glm-4-plus"
+    api_key_env: "ZHIPU_API_KEY"
+    max_tokens: 8192
+    temperature: 0.7
+
+  glm-4-flash:
+    provider: "openai-compatible"
+    base_url: "https://open.bigmodel.cn/api/paas/v4"
+    model: "glm-4-flash"
+    api_key_env: "ZHIPU_API_KEY"
+    max_tokens: 8192
+    temperature: 0.7
+
+  # ---------- Claude (可选) ----------
+  claude-sonnet-5:
+    provider: "anthropic"
+    model: "claude-sonnet-5"
+    api_key_env: "ANTHROPIC_API_KEY"
+    max_tokens: 8192
+    temperature: 0.7
+
+  claude-opus-4-8:
+    provider: "anthropic"
+    model: "claude-opus-4-8"
+    api_key_env: "ANTHROPIC_API_KEY"
+    max_tokens: 8192
+    temperature: 0.7
+
+# ===================================================================
+# 各 Agent 角色默认模型（可被任务级配置覆盖）
+# 建议关键环节用更强模型，简单环节用快模型省钱
+# ===================================================================
+agent_models:
+  analyst: "glm-4.7"      # 问题分析
+  modeler: "glm-4.7"      # 建模
+  solver: "glm-4.7"       # 写求解代码
+  writer: "glm-4.7"       # 写论文
+  reviewer: "glm-4.7"     # 审查
+
+# ===================================================================
+# 求解 Agent 代码执行配置
+# ===================================================================
+solver:
+  # 执行超时（秒）
+  execution_timeout: 60
+  # 工作目录（相对任务目录）
+  workdir: "artifacts/solution"
+  # 允许的 Python 标准库 + 第三方库
+  allowed_packages:
+    - numpy
+    - pandas
+    - scipy
+    - matplotlib
+    - scikit-learn
+    - networkx
+    - sympy
+    - pulp
+
+# ===================================================================
+# 审查 Agent 配置
+# ===================================================================
+reviewer:
+  # 最大重试次数（审查不通过时回退到对应 Agent 重做）
+  max_retries: 2
+  # 通过分数阈值（0-100）
+  pass_threshold: 75
