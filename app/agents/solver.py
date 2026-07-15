@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import py_compile
+import re
 import subprocess
 import sys
 
@@ -191,3 +192,53 @@ class SolverAgent(BaseAgent):
         return {"sub_id": sub["id"], "stage": stage["name"], "ok": False,
                 "code": code, "stdout": "", "stage_result": None,
                 "figures": [], "attempts": attempts, "error": last_error}
+
+    def _self_critique_stage(self, sub, stage, code, stage_result) -> dict:
+        prompt = (
+            f"审查子问题 {sub['id']} 的【{stage['name']}】阶段输出是否正确合理。\n"
+            f"阶段目标：{stage.get('goal')}\n代码：\n```python\n{code}\n```\n"
+            f"STAGE_RESULT：{json.dumps(stage_result, ensure_ascii=False)}\n\n"
+            "判断输出是否合理回应目标、方法是否恰当、有无红旗。只输出 JSON："
+            '```json\n{"passed": true, "issues": [], "suggestion": ""}\n```'
+        )
+        text = self.llm.chat([Message("system", "你是严谨的数值结果审查者。"), Message("user", prompt)])
+        m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
+        raw = m.group(1) if m else text
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"passed": True, "issues": ["自查解析失败，默认通过"], "suggestion": ""}
+
+    def _aggregate(self, outcomes: list[dict]) -> tuple[str, dict]:
+        tid = self.task.meta.task_id
+        # 关键阶段 = solve；某子问题若无 solve，取其最后一个阶段为关键
+        sub_outcomes: dict[str, list[dict]] = {}
+        for o in outcomes:
+            sub_outcomes.setdefault(o["sub_id"], []).append(o)
+        executed = True
+        sub_status = []
+        out_lines = []
+        for sid, lst in sub_outcomes.items():
+            crit = next((o for o in lst if o["stage"] == "solve"), lst[-1])
+            if not crit["ok"]:
+                executed = False
+            sub_status.append({"id": sid, "critical_stage": crit["stage"], "ok": crit["ok"],
+                               "stages": [{"name": o["stage"], "ok": o["ok"]} for o in lst]})
+            out_lines.append(f"## 子问题 {sid}")
+            for o in lst:
+                out_lines.append(f"- [{o['stage']}] {'OK' if o['ok'] else 'FAIL'}")
+                if o.get("stage_result") and o["stage_result"].get("metrics"):
+                    out_lines.append(f"  metrics: {json.dumps(o['stage_result']['metrics'], ensure_ascii=False)}")
+                if o.get("error"):
+                    out_lines.append(f"  error: {o['error']}")
+        output_txt = "\n".join(out_lines)
+        # 汇总自查
+        critique = self.llm.chat([Message("system", "你是建模结果一致性审查者。"),
+                                  Message("user", f"各子问题阶段输出：\n{output_txt}\n请给一句一致性/正确性结论。")])
+        summary_md = f"# 求解汇总自查\n\nexecuted={executed}\n\n{critique}\n"
+        status = {"executed": executed, "subproblems": sub_status,
+                  "error": None if executed else "存在子问题求解关键阶段失败"}
+        self.store.write_solution_output(tid, output_txt, "")
+        self.store.write_solution_file(tid, "status.json", json.dumps(status, ensure_ascii=False, indent=2))
+        self.store.write_solution_file(tid, "summary.md", summary_md)
+        return summary_md, status

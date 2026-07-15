@@ -51,3 +51,24 @@ def test_run_stage_fail_bounded(make_store_task):
              "method": "m", "figures": [], "expected_range": None}
     out = agent._run_stage(None, sub, stage)
     assert out["ok"] is False
+
+
+def test_self_critique_stage_parses_json(make_store_task):
+    store, task = make_store_task("题目")
+    agent = SolverAgent(task, store, llm=FakeLLM(['```json\n{"passed": true, "issues": [], "suggestion": ""}\n```']))
+    r = agent._self_critique_stage({"id": "sub1"}, {"name": "solve"}, "print(1)", {"ok": True, "metrics": {"z": 1}})
+    assert r["passed"] is True
+
+
+def test_aggregate_status_executed(make_store_task):
+    store, task = make_store_task("题目")
+    agent = SolverAgent(task, store, llm=FakeLLM(["汇总：结果一致"]))
+    outcomes = [
+        {"sub_id": "sub1", "stage": "solve", "ok": True, "stdout": "z=1", "stage_result": {"metrics": {"z": 1}}, "figures": [], "error": ""},
+        {"sub_id": "sub1", "stage": "plot", "ok": False, "stdout": "", "stage_result": None, "figures": [], "error": "画图失败"},
+    ]
+    summary, status = agent._aggregate(outcomes)
+    # solve 关键阶段成功 -> executed True（画图失败不影响）
+    assert status["executed"] is True
+    assert store.read_solution_file(task.meta.task_id, "status.json") != ""
+    assert store.read_solution_file(task.meta.task_id, "output.txt") != ""
