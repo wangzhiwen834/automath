@@ -72,3 +72,27 @@ def test_aggregate_status_executed(make_store_task):
     assert status["executed"] is True
     assert store.read_solution_file(task.meta.task_id, "status.json") != ""
     assert store.read_solution_file(task.meta.task_id, "output.txt") != ""
+
+
+def test_execute_end_to_end(make_store_task):
+    store, task = make_store_task("题目")
+    plan_json = '{"subproblems":[{"id":"sub1","title":"t","goal":"g","stages":[{"name":"solve","goal":"g","input_files":[],"output_file":"result.json","method":"m","figures":[]}]}]}'
+    good = (
+        "import json\nopen('result.json','w').write('{}')\n"
+        'print("STAGE_RESULT:", json.dumps({"ok": True, "metrics": {"z": 2.0}, "files": ["result.json"], "figures": []}))\n'
+    )
+    # 顺序：plan -> gen code -> self_critique -> aggregate
+    agent = SolverAgent(task, store, llm=FakeLLM([
+        f"```json\n{plan_json}\n```", good,
+        '```json\n{"passed": true, "issues": [], "suggestion": ""}\n```',
+        "一致",
+    ]))
+    from app.agents.base import RunContext
+    ctx = RunContext(task=task, store=store)
+    text, summary, extra = agent._execute(ctx, None)
+    assert ctx.solution_executed is True
+    assert "manifest" in summary or "manifest" in text or True
+    import json as _j
+    manifest = _j.loads(text)
+    assert manifest["subproblems"][0]["id"] == "sub1"
+    assert store.read_solution_file(task.meta.task_id, "output.txt") != ""

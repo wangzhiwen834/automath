@@ -109,7 +109,7 @@ class SolverAgent(BaseAgent):
     # ----------------------------------------------------------
     # 阶段执行流水线：生成 -> 语法预检 -> 执行 -> 硬校验 -> 有界修复
     # ----------------------------------------------------------
-    def _gen_code(self, sub, stage, prev_outputs: str) -> str:
+    def _gen_code(self, sub, stage, prev_outputs: str, hint: str = "") -> str:
         prompt = (
             f"为子问题 {sub['id']}（{sub.get('title','')}）的阶段【{stage['name']}】写 Python 代码。\n"
             f"阶段目标：{stage['goal']}\n方法：{stage['method']}\n"
@@ -122,6 +122,8 @@ class SolverAgent(BaseAgent):
             "- 用相对路径读写文件（当前工作目录即本子问题目录）。\n\n"
             f"上游可用信息：\n{prev_outputs}\n"
         )
+        if hint:
+            prompt += f"\n\n【特别提示】{hint}"
         text = self.llm.chat([Message("system", self.system_prompt), Message("user", prompt)])
         return extract_python(text)
 
@@ -148,7 +150,7 @@ class SolverAgent(BaseAgent):
         except Exception as e:
             return "", f"执行异常: {e}", False
 
-    def _run_stage(self, ctx, sub, stage) -> dict:
+    def _run_stage(self, ctx, sub, stage, hint: str = "") -> dict:
         tid = self.task.meta.task_id
         cfg = get_settings().solver_config
         seed = cfg.get("preamble_seed", 42)
@@ -163,7 +165,7 @@ class SolverAgent(BaseAgent):
         last_error = ""
         for _ in range(max_regen):
             attempts += 1
-            code = self._gen_code(sub, stage, prev_outputs) if attempts == 1 else self._fix_code(code, last_error)
+            code = self._gen_code(sub, stage, prev_outputs, hint=hint) if attempts == 1 else self._fix_code(code, last_error)
             code = inject_preamble(code, seed=seed)
             script = sub_dir / f"{stage['name']}.py"
             script.write_text(code, encoding="utf-8")
@@ -242,3 +244,56 @@ class SolverAgent(BaseAgent):
         self.store.write_solution_file(tid, "status.json", json.dumps(status, ensure_ascii=False, indent=2))
         self.store.write_solution_file(tid, "summary.md", summary_md)
         return summary_md, status
+
+    # ----------------------------------------------------------
+    # 编排：计划 -> 逐阶段执行 + 自查有界返修 -> 汇总 -> manifest + ctx
+    # ----------------------------------------------------------
+    def _execute(self, ctx, stream_callback) -> tuple[str, str, dict]:
+        tid = self.task.meta.task_id
+        cfg = get_settings().solver_config
+        max_critique = cfg.get("max_critique_retries", 1)
+        plan = self._make_plan(ctx)
+        outcomes: list[dict] = []
+        for sub in plan["subproblems"]:
+            for stage in sub["stages"]:
+                if stream_callback:
+                    stream_callback(f"[{sub['id']}/{stage['name']}] 开始\n")
+                out = self._run_stage(ctx, sub, stage)
+                # 自查 + 有界返修
+                if out["ok"]:
+                    for _ in range(max_critique + 1):
+                        crit = self._self_critique_stage(sub, stage, out["code"], out["stage_result"])
+                        if crit.get("passed"):
+                            break
+                        # 自查不通过：把问题回填 -> 带提示重生成一次
+                        fixed = self._run_stage(
+                            ctx, sub, stage,
+                            hint="自查不通过：" + "; ".join(crit.get("issues", [])),
+                        )
+                        if fixed["ok"]:
+                            out = fixed
+                        else:
+                            break
+                outcomes.append(out)
+                if stream_callback:
+                    stream_callback(f"[{sub['id']}/{stage['name']}] {'OK' if out['ok'] else 'FAIL'}\n")
+        summary_md, status = self._aggregate(outcomes)
+        # manifest
+        manifest = {
+            "executed": status["executed"],
+            "subproblems": [
+                {"id": s["id"], "stages": s["stages"]} for s in status["subproblems"]
+            ],
+            "figures": self.store.list_figures(tid),
+        }
+        manifest_json = json.dumps(manifest, ensure_ascii=False, indent=2)
+        # 设置 ctx 供下游
+        ctx.solution_stdout = self.store.read_solution_file(tid, "output.txt") if status["executed"] else None
+        ctx.solution_stderr = ""
+        ctx.solution_executed = status["executed"]
+        ctx.solution_error = status.get("error")
+        ctx.figures = self.store.list_figures(tid)
+        n_fig = len(ctx.figures)
+        summary = (f"求解{'成功' if status['executed'] else '部分失败'}，"
+                   f"{len(outcomes)} 阶段，{sum(1 for o in outcomes if o['ok'])} 成功，{n_fig} 张图")
+        return manifest_json, summary, {"executed": status["executed"], "figures": ctx.figures, "outcomes": outcomes}
