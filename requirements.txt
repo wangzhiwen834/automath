@@ -28,3 +28,6 @@ scikit-learn
 networkx
 sympy
 pulp
+
+# Testing
+pytest>=8.0.0
