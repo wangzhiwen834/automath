@@ -82,6 +82,7 @@ class SolverAgent(BaseAgent):
             "- 用 print() 输出关键数值结果，每项带标注，如 print('optimal_cost =', Z)。\n"
             "- 顶部用 try/except 包住主逻辑，出错时 print 错误信息而非崩溃。\n\n"
             "图表要求（重要）：\n"
+            "- plot 阶段必须绘制实际数据图（曲线/柱状/散点/热力图等），禁止用 plt.text/ax.text 只在图中间显示标量结果或 metrics 文字。若上游结果只有标量值（如最优解/最优成本），必须重新生成画图数据（如目标函数随变量变化的曲线、参数扫描、迭代收敛过程），画出有信息量的图并在图上标注关键点（最优点、极值等）。\n"
             "- 对关键结果画图，保存为 PNG 到 'artifacts/figures/' 目录（相对工作目录）。\n"
             "- 保存前先确保目录存在：import os; os.makedirs('artifacts/figures', exist_ok=True)\n"
             "- 用英文文件名，如 plt.savefig('artifacts/figures/fig1_curve.png', dpi=150, bbox_inches='tight'); plt.close()\n"
@@ -122,6 +123,14 @@ class SolverAgent(BaseAgent):
             "- 用相对路径读写文件（当前工作目录即本子问题目录）。\n\n"
             f"上游可用信息：\n{prev_outputs}\n"
         )
+        if stage.get("name") == "plot":
+            prompt += (
+                "【plot 阶段特别要求】必须绘制实际数据图（曲线/柱状/散点/热力图等），"
+                "禁止用 plt.text/ax.text 只在图中间显示标量结果或 metrics 文字。"
+                "若上游结果只有标量值，应重新计算生成画图所需的数据序列"
+                "（如目标函数随变量变化的曲线、参数扫描、迭代收敛过程），"
+                "画出有信息量的图并在图上标注关键点。\n"
+            )
         if hint:
             prompt += f"\n\n【特别提示】{hint}"
         text = self.llm.chat([Message("system", self.system_prompt), Message("user", prompt)])
