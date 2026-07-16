@@ -106,7 +106,7 @@ def delete_task(task_id: str):
 ARTIFACT_MAP = {
     "analyst": "artifacts/analysis.md",
     "modeler": "artifacts/model.md",
-    "solver": "artifacts/solution/solve.py",
+    "solver": "artifacts/solution/output.txt",
     "writer": "artifacts/paper.md",
     "reviewer": "artifacts/review.md",
 }

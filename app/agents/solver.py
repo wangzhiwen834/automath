@@ -270,16 +270,25 @@ class SolverAgent(BaseAgent):
     # ----------------------------------------------------------
     # 编排：计划 -> 逐阶段执行 + 自查有界返修 -> 汇总 -> manifest + ctx
     # ----------------------------------------------------------
+    def _emit_progress(self, tid: str, stream_callback, text: str) -> None:
+        """推流进度并记日志，保证前端实时看到 + 刷新回放一致。"""
+        if stream_callback:
+            stream_callback(text)
+        self.store.append_log(tid, self.name.value, {"type": "delta", "text": text})
+
     def _execute(self, ctx, stream_callback) -> tuple[str, str, dict]:
         tid = self.task.meta.task_id
         cfg = get_settings().solver_config
         max_critique = cfg.get("max_critique_retries", 1)
+        self._emit_progress(tid, stream_callback, "正在生成求解计划...\n")
         plan = self._make_plan(ctx)
+        n_stages = sum(len(s["stages"]) for s in plan["subproblems"])
+        self._emit_progress(tid, stream_callback,
+                            f"计划：{len(plan['subproblems'])} 个子问题，{n_stages} 个阶段\n\n")
         outcomes: list[dict] = []
         for sub in plan["subproblems"]:
             for stage in sub["stages"]:
-                if stream_callback:
-                    stream_callback(f"[{sub['id']}/{stage['name']}] 开始\n")
+                self._emit_progress(tid, stream_callback, f"[{sub['id']}/{stage['name']}] 开始\n")
                 out = self._run_stage(ctx, sub, stage)
                 # 自查 + 有界返修
                 if out["ok"]:
@@ -297,8 +306,20 @@ class SolverAgent(BaseAgent):
                         else:
                             break
                 outcomes.append(out)
-                if stream_callback:
-                    stream_callback(f"[{sub['id']}/{stage['name']}] {'OK' if out['ok'] else 'FAIL'}\n")
+                # 推送生成的代码 + 执行输出，让前端看到求解过程
+                if out.get("code"):
+                    code = out["code"]
+                    if len(code) > 1500:
+                        code = code[:1500] + f"\n... (代码截断，完整见 artifacts/solution/{sub['id']}/{stage['name']}.py)"
+                    self._emit_progress(tid, stream_callback,
+                                        f"--- {sub['id']}/{stage['name']}.py ---\n{code}\n")
+                if out.get("stdout"):
+                    stdout = out["stdout"]
+                    if len(stdout) > 1000:
+                        stdout = stdout[:1000] + "\n... (执行输出截断)"
+                    self._emit_progress(tid, stream_callback, f"--- 执行输出 ---\n{stdout}\n")
+                self._emit_progress(tid, stream_callback,
+                                    f"[{sub['id']}/{stage['name']}] {'OK' if out['ok'] else 'FAIL'}\n\n")
         summary_md, status = self._aggregate(outcomes)
         # manifest
         manifest = {
