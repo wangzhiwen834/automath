@@ -68,10 +68,10 @@ class ReviewerAgent(BaseAgent):
                 st = json.loads(status_raw)
                 lines = ["【逐子问题阶段状态】"]
                 for sp in st.get("subproblems", []):
-                    stages = ", ".join(f"{s['name']}={'OK' if s['ok'] else 'FAIL'}" for s in sp.get("stages", []))
+                    stages = ", ".join(f"{s.get('name', '?')}={'OK' if s.get('ok') else 'FAIL'}" for s in sp.get("stages", []))
                     lines.append(f"- {sp.get('id')}: 关键阶段={sp.get('critical_stage')} -> {'OK' if sp.get('ok') else 'FAIL'} [{stages}]")
                 status_text = "\n".join(lines) + "\n\n"
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, KeyError, TypeError):
                 pass
         return (
             f"【题目】\n{problem}\n\n"
