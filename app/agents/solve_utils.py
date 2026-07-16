@@ -26,6 +26,25 @@ def parse_stage_result(stdout: str) -> dict | None:
         return None
 
 
+def extract_script_error(stdout: str) -> str:
+    """从脚本 stdout 提取实际错误信息，供 _fix_code 对症修复。
+
+    硬检查失败（STAGE_RESULT 缺失或 ok!=true）时，脚本通常走了 except 分支并
+    打印了 Error/Traceback。把这些信息提取出来交给 LLM，避免 _fix_code 只看到
+    "STAGE_RESULT 缺失" 这种表面描述而无法定位真实问题、反复无效重试。
+    """
+    if not stdout:
+        return ""
+    lines = stdout.splitlines()
+    keywords = ("Error", "Traceback", "Exception", "错误", "异常")
+    err_lines = [ln.strip() for ln in lines if any(k in ln for k in keywords) and ln.strip()]
+    if err_lines:
+        return " / ".join(err_lines[:5])[:600]
+    # 无明显错误行：返回末尾几行（脚本可能正常输出但缺 STAGE_RESULT，末尾能反映状态）
+    tail = [ln.strip() for ln in lines[-4:] if ln.strip()]
+    return " / ".join(tail)[:400] if tail else ""
+
+
 def inject_preamble(code: str, seed: int = 42) -> str:
     """注入可复现前导：随机种子 + matplotlib Agg 后端。"""
     preamble = (
@@ -115,7 +134,10 @@ def check_finite(metrics: dict) -> tuple[bool, str]:
 
 def check_figures(figures: list[str], figures_dir: Path) -> tuple[bool, str]:
     for f in figures:
-        p = figures_dir / f
+        # 取 basename：LLM 可能把 figures 写成 "artifacts/figures/xxx.png" 或纯文件名，
+        # 统一只用文件名部分在任务级 figures_dir 下查找
+        name = Path(f).name
+        p = figures_dir / name
         if not p.exists() or p.stat().st_size == 0:
             return False, f"图表文件缺失或为空: {f}"
         with open(p, "rb") as fh:
@@ -147,8 +169,15 @@ def run_hard_checks(stage_result: dict, stage: dict, sub_dir: Path, figures_dir:
         errs.append(msg)
     out_file = stage.get("output_file")
     if out_file:
-        if not (sub_dir / out_file).exists():
-            errs.append(f"输出文件缺失: {out_file}")
+        # 先在 sub_dir 按原路径找；找不到再在任务级 figures_dir 按文件名找
+        # （图类产出已被搬到 figures_dir，LLM 常把 plot 阶段的 output_file 写成图路径）
+        name = Path(out_file).name
+        stage_figs = [Path(f).name for f in (stage.get("figures") or [])]
+        # output_file 与某张 figure 同名时跳过：图已由 check_figures 检查，
+        # 此处重复检查时序敏感（依赖 _collect_figures 搬图时机）易误报
+        if name not in stage_figs:
+            if not (sub_dir / out_file).exists() and not (figures_dir / name).exists():
+                errs.append(f"输出文件缺失: {out_file}")
     figs = stage_result.get("figures", []) if stage_result else []
     ok, msg = check_figures(figs, figures_dir)
     if not ok:

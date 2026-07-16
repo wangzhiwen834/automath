@@ -18,7 +18,7 @@ import sys
 from app.agents.base import BaseAgent
 from app.agents.solve_utils import (
     extract_python, parse_stage_result, inject_preamble,
-    parse_plan, validate_plan, fallback_plan, run_hard_checks,
+    parse_plan, validate_plan, fallback_plan, run_hard_checks, extract_script_error,
 )
 from app.config import get_settings
 from app.llm.provider import Message
@@ -86,7 +86,7 @@ class SolverAgent(BaseAgent):
             "- 保存前先确保目录存在：import os; os.makedirs('artifacts/figures', exist_ok=True)\n"
             "- 用英文文件名，如 plt.savefig('artifacts/figures/fig1_curve.png', dpi=150, bbox_inches='tight'); plt.close()\n"
             "- 每张图画完立即 savefig 并 close，不要 plt.show()。\n"
-            "- 代码末尾用 print('FIGURES:', <生成的文件名列表>) 列出所有生成的图。\n\n"
+            "- 代码末尾必须 print 一行 `STAGE_RESULT: <json>`，含 ok(布尔)/metrics(数值dict)/files(产出文件名list)/figures(图文件名list，用纯文件名不带路径)。这是框架判定阶段成败的唯一依据，缺失即判 FAIL。\n\n"
             "数据文件：若提供了上传数据文件，用相对路径 'data/<文件名>' 读取（如 pd.read_csv('data/sales.csv')）。"
         )
 
@@ -150,6 +150,19 @@ class SolverAgent(BaseAgent):
         except Exception as e:
             return "", f"执行异常: {e}", False
 
+    def _collect_figures(self, sub_dir: Path, fig_dir: Path) -> None:
+        """脚本以 sub_dir 为工作目录，按 prompt 把图保存到 sub_dir/artifacts/figures/。
+        把这些图复制到任务级 fig_dir，供 check_figures / list_figures / writer 统一索引。
+        （脚本 cwd 是子问题目录，而框架在任务级 figures_dir 索引图，需对齐。）
+        """
+        import shutil
+        src = sub_dir / "artifacts" / "figures"
+        if not src.is_dir():
+            return
+        for f in src.iterdir():
+            if f.is_file():
+                shutil.copy2(f, fig_dir / f.name)
+
     def _run_stage(self, ctx, sub, stage, hint: str = "") -> dict:
         tid = self.task.meta.task_id
         cfg = get_settings().solver_config
@@ -182,6 +195,9 @@ class SolverAgent(BaseAgent):
                 last_error = stderr[:1500] or "执行返回非零退出码"
                 self.store.append_log(tid, self.name.value, {"type": "exec_error", "stage": stage["name"], "error": last_error})
                 continue
+            # 脚本以 sub_dir 为 cwd，按 prompt 把图存到了 sub_dir/artifacts/figures/；
+            # 搬到任务级 fig_dir，供 check_figures / list_figures / writer 统一索引
+            self._collect_figures(sub_dir, fig_dir)
             sr = parse_stage_result(stdout)
             hard_ok, errs = run_hard_checks(sr or {}, stage, sub_dir, fig_dir)
             if hard_ok:
@@ -190,6 +206,12 @@ class SolverAgent(BaseAgent):
                         "code": code, "stdout": stdout, "stage_result": sr,
                         "figures": (sr or {}).get("figures", []), "attempts": attempts, "error": ""}
             last_error = "硬检查失败: " + "; ".join(errs)
+            # 附上脚本实际输出错误，帮助 _fix_code 对症修复：
+            # 脚本常走 except 分支打印真实 Error/Traceback，但硬检查只看到
+            # "STAGE_RESULT 缺失" 这种表面描述，导致 LLM 反复无效重试。
+            script_err = extract_script_error(stdout)
+            if script_err:
+                last_error += " | 脚本输出: " + script_err
             self.store.append_log(tid, self.name.value, {"type": "hard_check_fail", "stage": stage["name"], "error": last_error})
         return {"sub_id": sub["id"], "stage": stage["name"], "ok": False,
                 "code": code, "stdout": "", "stage_result": None,
