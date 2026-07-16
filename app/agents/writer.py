@@ -145,3 +145,33 @@ class WriterAgent(BaseAgent):
         )
         return self.llm.chat([Message("system", self.system_prompt), Message("user", prompt)]).strip()
 
+    # ----------------------------------------------------------
+    # 一致性校验 + 有界返修（Task 14）
+    # ----------------------------------------------------------
+    def _consistency_check(self, ctx, paper) -> dict:
+        solver_out = ctx.solution_stdout or ""
+        fabricated = cross_check_numbers(paper, solver_out)
+        prompt = (
+            "把论文与上游分析/模型/求解结果对照，检查：方法/模型是否与建模一致、结论是否有结果支撑、"
+            "是否跑题夹带无关内容、有无过度推断。只输出 JSON：\n"
+            '```json\n{"offending_sections":[{"section":"abstract","issues":["..."]}],"off_topic":false,"fabricated_numbers":[]}\n```'
+            f"\n\n【论文】\n{paper[:4000]}\n\n【求解结果】\n{solver_out[:2000]}\n"
+            f"【分析】\n{self._prior(ctx, AgentName.ANALYST)[:1500]}\n【模型】\n{self._prior(ctx, AgentName.MODELER)[:1500]}"
+        )
+        text = self.llm.chat([Message("system", "你是论文一致性审查者。只输出 JSON。"), Message("user", prompt)])
+        m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
+        raw = m.group(1) if m else text
+        try:
+            r = json.loads(raw)
+        except json.JSONDecodeError:
+            r = {"offending_sections": [], "off_topic": False, "fabricated_numbers": []}
+        r["fabricated_numbers"] = list(set(r.get("fabricated_numbers", [])) | set(fabricated))
+        return r
+
+    def _regen_section(self, ctx, section, text, issues) -> str:
+        prompt = (
+            f"章节【{section['title']}】存在一致性问题，请据问题重写该节（只输出该节正文，保持与上游一致，不编造）。\n"
+            f"【问题】{issues}\n【当前内容】\n{text}\n\n【材料】\n{self._section_context(ctx, section) if ctx else ''}"
+        )
+        return self.llm.chat([Message("system", self.system_prompt), Message("user", prompt)]).strip()
+
