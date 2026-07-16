@@ -6,7 +6,7 @@
 workspace_dir: "./workspace"
 
 # 默认模型：model_registry 中的 key
-default_model: "glm-4.7"
+default_model: "deepseek-v4-pro"
 
 # ===================================================================
 # 模型注册表
@@ -15,6 +15,14 @@ default_model: "glm-4.7"
 # ===================================================================
 model_registry:
   # ---------- DeepSeek ----------
+  deepseek-v4-pro:
+    provider: "openai-compatible"
+    base_url: "https://api.deepseek.com/v1"
+    model: "deepseek-v4-pro"
+    api_key_env: "DEEPSEEK_API_KEY"
+    max_tokens: 8192
+    temperature: 0.7
+
   deepseek-chat:
     provider: "openai-compatible"
     base_url: "https://api.deepseek.com/v1"
@@ -93,11 +101,11 @@ model_registry:
 # 建议关键环节用更强模型，简单环节用快模型省钱
 # ===================================================================
 agent_models:
-  analyst: "glm-4.7"      # 问题分析
-  modeler: "glm-4.7"      # 建模
-  solver: "glm-4.7"       # 写求解代码
-  writer: "glm-4.7"       # 写论文
-  reviewer: "glm-4.7"     # 审查
+  analyst: "deepseek-v4-pro"      # 问题分析
+  modeler: "deepseek-v4-pro"      # 建模
+  solver: "deepseek-v4-pro"       # 写求解代码
+  writer: "deepseek-v4-pro"       # 写论文
+  reviewer: "deepseek-v4-pro"     # 审查
 
 # ===================================================================
 # 求解 Agent 代码执行配置
