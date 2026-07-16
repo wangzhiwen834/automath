@@ -251,6 +251,7 @@ class SolverAgent(BaseAgent):
         executed = True
         sub_status = []
         out_lines = []
+        summary_lines = []
         for sid, lst in sub_outcomes.items():
             crit = next((o for o in lst if o["stage"] == "solve"), lst[-1])
             if not crit["ok"]:
@@ -258,16 +259,28 @@ class SolverAgent(BaseAgent):
             sub_status.append({"id": sid, "critical_stage": crit["stage"], "ok": crit["ok"],
                                "stages": [{"name": o["stage"], "ok": o["ok"]} for o in lst]})
             out_lines.append(f"## 子问题 {sid}")
+            summary_lines.append(f"## 子问题 {sid}")
             for o in lst:
-                out_lines.append(f"- [{o['stage']}] {'OK' if o['ok'] else 'FAIL'}")
+                st_line = f"- [{o['stage']}] {'OK' if o['ok'] else 'FAIL'}"
+                out_lines.append(st_line)
+                summary_lines.append(st_line)
                 if o.get("stage_result") and o["stage_result"].get("metrics"):
-                    out_lines.append(f"  metrics: {json.dumps(o['stage_result']['metrics'], ensure_ascii=False)}")
+                    m_line = f"  metrics: {json.dumps(o['stage_result']['metrics'], ensure_ascii=False)}"
+                    out_lines.append(m_line)
+                    summary_lines.append(m_line)
                 if o.get("error"):
-                    out_lines.append(f"  error: {o['error']}")
+                    e_line = f"  error: {o['error']}"
+                    out_lines.append(e_line)
+                    summary_lines.append(e_line)
+                # 完整代码写入 output.txt 供前端展示
+                if o.get("code"):
+                    out_lines.append(f"  代码 ({o['stage']}.py):")
+                    out_lines.append(o["code"])
         output_txt = "\n".join(out_lines)
-        # 汇总自查
+        # 汇总自查（用不含代码的摘要给 LLM，省 token）
+        summary_text = "\n".join(summary_lines)
         critique = self.llm.chat([Message("system", "你是建模结果一致性审查者。"),
-                                  Message("user", f"各子问题阶段输出：\n{output_txt}\n请给一句一致性/正确性结论。")])
+                                  Message("user", f"各子问题阶段输出：\n{summary_text}\n请给一句一致性/正确性结论。")])
         summary_md = f"# 求解汇总自查\n\nexecuted={executed}\n\n{critique}\n"
         status = {"executed": executed, "subproblems": sub_status,
                   "error": None if executed else "存在子问题求解关键阶段失败"}
@@ -317,11 +330,8 @@ class SolverAgent(BaseAgent):
                 outcomes.append(out)
                 # 推送生成的代码 + 执行输出，让前端看到求解过程
                 if out.get("code"):
-                    code = out["code"]
-                    if len(code) > 1500:
-                        code = code[:1500] + f"\n... (代码截断，完整见 artifacts/solution/{sub['id']}/{stage['name']}.py)"
                     self._emit_progress(tid, stream_callback,
-                                        f"--- {sub['id']}/{stage['name']}.py ---\n{code}\n")
+                                        f"--- {sub['id']}/{stage['name']}.py ---\n{out['code']}\n")
                 if out.get("stdout"):
                     stdout = out["stdout"]
                     if len(stdout) > 1000:
