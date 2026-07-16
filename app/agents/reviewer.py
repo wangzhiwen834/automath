@@ -60,11 +60,25 @@ class ReviewerAgent(BaseAgent):
         else:
             exec_status = "未知（无求解记录）"
         solver_out = ctx.solution_stdout or "(无输出——求解未执行成功)"
+        # 逐子问题阶段状态（若 status.json 存在）
+        status_text = ""
+        status_raw = self.store.read_solution_file(self.task.meta.task_id, "status.json")
+        if status_raw:
+            try:
+                st = json.loads(status_raw)
+                lines = ["【逐子问题阶段状态】"]
+                for sp in st.get("subproblems", []):
+                    stages = ", ".join(f"{s['name']}={'OK' if s['ok'] else 'FAIL'}" for s in sp.get("stages", []))
+                    lines.append(f"- {sp.get('id')}: 关键阶段={sp.get('critical_stage')} -> {'OK' if sp.get('ok') else 'FAIL'} [{stages}]")
+                status_text = "\n".join(lines) + "\n\n"
+            except json.JSONDecodeError:
+                pass
         return (
             f"【题目】\n{problem}\n\n"
             f"【问题分析】\n{analysis}\n\n"
             f"【数学模型】\n{model}\n\n"
             f"【求解执行状态】{exec_status}\n\n"
+            f"{status_text}"
             f"【求解结果输出】\n{solver_out}\n\n"
             f"【论文全文】\n{paper}\n\n"
             "请严格审查并输出评分 JSON。务必先核对求解执行状态与输出，再打分。"
