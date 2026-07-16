@@ -56,8 +56,23 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
   const status = mergedState?.status || detail?.state.status;
   const waiting = mergedState?.waiting_for_human;
   const reviewRound = mergedState?.review_round || 0;
+  // 后端实际是否在跑线程（false 但 status=running => 卡死/僵尸，可强制重启）
+  const running = detail?.running ?? false;
 
-  const run = async () => { setBusy(true); await api.runTask(taskId); setBusy(false); reload(); };
+  const run = async () => {
+    setBusy(true);
+    try {
+      const res = await api.runTask(taskId);
+      if (!res.ok) {
+        alert(res.detail || "启动失败，请重试");
+      }
+    } catch {
+      alert("网络错误，请检查后端服务是否运行");
+    } finally {
+      setBusy(false);
+      reload();
+    }
+  };
   const resume = async (decision: string) => {
     setBusy(true);
     await api.resumeTask(taskId, decision, decision === "modify" ? feedback : undefined);
@@ -96,6 +111,19 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
               <button onClick={run} disabled={busy}
                 className="brand-gradient text-white text-sm px-4 py-1.5 rounded-lg flex items-center gap-1.5 hover:opacity-90 disabled:opacity-50">
                 <Play size={14} /> 启动
+              </button>
+            )}
+            {status === "failed" && (
+              <button onClick={run} disabled={busy}
+                className="bg-amber-600 text-white text-sm px-4 py-1.5 rounded-lg flex items-center gap-1.5 hover:bg-amber-700 disabled:opacity-50">
+                <RotateCcw size={14} /> 重试
+              </button>
+            )}
+            {status === "running" && !running && (
+              <button onClick={run} disabled={busy}
+                className="bg-amber-600 text-white text-sm px-4 py-1.5 rounded-lg flex items-center gap-1.5 hover:bg-amber-700 disabled:opacity-50"
+                title="任务标记为运行中但后台线程已停止，可能异常中断。点击强制重启。">
+                <RotateCcw size={14} /> 强制重启
               </button>
             )}
             {status === "completed" && (

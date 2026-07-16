@@ -88,7 +88,9 @@ export const api = {
   }) => fetch(`${API_BASE}/api/tasks`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   }).then((r) => r.json()),
-  runTask: (id: string) => fetch(`${API_BASE}/api/tasks/${id}/run`, { method: "POST" }).then((r) => r.json()),
+  runTask: (id: string) =>
+    fetch(`${API_BASE}/api/tasks/${id}/run`, { method: "POST" })
+      .then(async (r) => ({ ok: r.ok, status: r.status, ...(await r.json()) })),
   resumeTask: (id: string, decision: string, feedback?: string) =>
     fetch(`${API_BASE}/api/tasks/${id}/resume`, {
       method: "POST", headers: { "Content-Type": "application/json" },

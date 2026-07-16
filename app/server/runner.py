@@ -67,16 +67,41 @@ class TaskRunner:
         t.start()
         return True
 
+    def _handle_orchestrator_failure(self, task_id: str, err: BaseException) -> None:
+        """orch.run()/resume() 抛异常时的兜底：落盘 FAILED 状态 + 发事件。
+
+        否则 task.state 会永久停在 RUNNING（orchestrator 已 save 了 RUNNING，
+        但异常发生在 agent.run() 之前，没人把状态改成 FAILED），前端永远显示"运行中"。
+        """
+        from app.storage import get_store, TaskStatus, AgentStatus, AGENT_ORDER
+        try:
+            store = get_store()
+            task = store.load(task_id)
+            if task.state.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                task.state.status = TaskStatus.FAILED
+                # 标记当前卡在 RUNNING 的 agent 为失败
+                for agent_name in AGENT_ORDER:
+                    rec = task.state.agents.get(agent_name.value)
+                    if rec and rec.status == AgentStatus.RUNNING:
+                        rec.status = AgentStatus.FAILED
+                        rec.error = str(err)
+                store.add_history(task, "failed", detail=f"orchestrator 异常: {err}")
+                store.save(task)
+        except Exception:
+            # 兜底自身不能再抛，否则线程静默死亡
+            pass
+        self._publish(task_id, {"type": "failed", "agent": "orchestrator",
+                                "error": str(err)})
+
     def start(self, task_id: str) -> bool:
         from app.orchestrator import Orchestrator
 
         def target() -> None:
-            orch = Orchestrator(task_id, event_sink=lambda e: self._publish(task_id, e))
             try:
+                orch = Orchestrator(task_id, event_sink=lambda e: self._publish(task_id, e))
                 orch.run()
             except Exception as e:
-                self._publish(task_id, {"type": "failed", "agent": "orchestrator",
-                                        "error": str(e)})
+                self._handle_orchestrator_failure(task_id, e)
 
         return self._spawn(task_id, target)
 
@@ -84,11 +109,10 @@ class TaskRunner:
         from app.orchestrator import Orchestrator
 
         def target() -> None:
-            orch = Orchestrator(task_id, event_sink=lambda e: self._publish(task_id, e))
             try:
+                orch = Orchestrator(task_id, event_sink=lambda e: self._publish(task_id, e))
                 orch.resume(decision, feedback)
             except Exception as e:
-                self._publish(task_id, {"type": "failed", "agent": "orchestrator",
-                                        "error": str(e)})
+                self._handle_orchestrator_failure(task_id, e)
 
         return self._spawn(task_id, target)
