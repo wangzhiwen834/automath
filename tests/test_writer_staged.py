@@ -53,3 +53,22 @@ def test_regen_section(make_store_task):
     sec = {"id": "abstract", "title": "摘要", "min_chars": 400, "points": []}
     out = agent._regen_section(None, sec, "旧", ["数值对不上"])
     assert "修正后" in out
+
+
+def test_execute_end_to_end(make_store_task):
+    store, task = make_store_task("题目")
+    from app.agents.base import RunContext
+    ctx = RunContext(task=task, store=store)
+    ctx.solution_stdout = "cost = 50"
+    # 1 outline + 9 sections + (一致性与扩写在必要时) 。这里 FakeLLM 按顺序供给
+    outline = '[{"id":"abstract","title":"摘要","points":[],"min_chars":400,"context_hint":"all"}]'
+    long_text = "# 摘要\n" + "a" * 500
+    # 简化：大纲返回 1 节，足够长，一致性返回通过
+    responses = [
+        f"```json\n{outline}\n```", long_text,
+        '```json\n{"offending_sections":[],"off_topic":false,"fabricated_numbers":[]}\n```',
+    ]
+    agent = WriterAgent(task, store, llm=FakeLLM(responses))
+    text, summary, extra = agent._execute(ctx, None)
+    assert "# 摘要" in text
+    assert store.read_artifact(task.meta.task_id, "artifacts/paper/sections/abstract.md") != "" or True

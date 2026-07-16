@@ -6,6 +6,7 @@ import re
 
 from app.agents.base import BaseAgent
 from app.agents.write_utils import is_thin_section, cross_check_numbers
+from app.config import get_settings
 from app.llm.provider import Message
 from app.storage import AgentName
 
@@ -45,42 +46,53 @@ class WriterAgent(BaseAgent):
             "并在正文中引用、解读每张图。图片路径用 figures/<文件名>（相对论文文件）。不要凭空引用不存在的图。"
         )
 
-    def build_user_prompt(self, ctx) -> str:
-        problem = self._problem(ctx)
-        analysis = self._prior(ctx, AgentName.ANALYST)
-        model = self._prior(ctx, AgentName.MODELER)
-        solver_out = ctx.solution_stdout or "(无求解输出)"
-        solver_code_path = self.task.state.agents.get("solver").artifact_path if self.task.state.agents.get("solver") else None
-        solver_code = ""
-        if solver_code_path:
-            solver_code = self.store.read_artifact(self.task.meta.task_id, solver_code_path)
+    def _execute(self, ctx, stream_callback) -> tuple[str, str, dict]:
+        tid = self.task.meta.task_id
+        cfg = get_settings().writer_config
+        max_expand = cfg.get("max_expand_sections", 4)
+        do_consistency = cfg.get("consistency_check", True)
+        min_default = cfg.get("min_section_chars", {}).get("default", 300)
 
-        figures_info = ""
-        if ctx.figures:
-            figures_info = "【求解生成的图表】（必须在论文中嵌入对应位置）：\n" + "\n".join(
-                f"- figures/{f}" for f in ctx.figures
-            ) + "\n\n"
+        outline = self._make_outline(ctx)
+        paper_dir = self.store.task_path(tid) / "artifacts" / "paper" / "sections"
+        paper_dir.mkdir(parents=True, exist_ok=True)
+        (paper_dir.parent / "outline.json").write_text(
+            json.dumps(outline, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        prefix = ""
-        if ctx.review_feedback:
-            prefix = f"【审查反馈，请据此改进论文】\n{ctx.review_feedback}\n\n"
+        section_texts: list[tuple[dict, str]] = []
+        expand_used = 0
+        for sec in outline:
+            text = self._write_section(ctx, sec)
+            mc = sec.get("min_chars", min_default)
+            if is_thin_section(text, mc) and expand_used < max_expand:
+                text = self._expand_section(ctx, sec, text)
+                expand_used += 1
+            (paper_dir / f"{sec['id']}.md").write_text(text, encoding="utf-8")
+            section_texts.append((sec, text))
+            if stream_callback:
+                stream_callback(f"[{sec['id']}] 完成\n")
 
-        return (
-            f"{prefix}{figures_info}"
-            f"【题目】\n{problem}\n\n"
-            f"【问题分析】\n{analysis}\n\n"
-            f"【数学模型】\n{model}\n\n"
-            f"【求解代码】\n```python\n{solver_code}\n```\n\n"
-            f"【求解结果（程序输出）】\n{solver_out}\n\n"
-            "请基于以上材料撰写完整论文。"
-        )
+        paper = self._assemble(section_texts)
 
-    def postprocess(self, ctx, text: str) -> tuple[str, str, dict]:
-        # 摘要取论文字数，不污染论文正文
-        char_count = len(text)
-        section_count = text.count("\n# ")
+        if do_consistency:
+            r = self._consistency_check(ctx, paper)
+            # 有界返修：最多 3 节
+            regen_count = 0
+            for sec, text in section_texts:
+                issues = []
+                for o in r.get("offending_sections", []):
+                    if o.get("section") == sec["id"]:
+                        issues = o.get("issues", [])
+                if (issues or r.get("off_topic")) and regen_count < 3:
+                    new_text = self._regen_section(ctx, sec, text, issues)
+                    section_texts[section_texts.index((sec, text))] = (sec, new_text)
+                    regen_count += 1
+            paper = self._assemble(section_texts)
+
+        char_count = len(paper)
+        section_count = paper.count("\n# ") + 1
         summary = f"论文已生成，约 {char_count} 字，含 {section_count} 个章节"
-        return text, summary, {"char_count": char_count, "section_count": section_count}
+        return paper, summary, {"char_count": char_count, "section_count": section_count}
 
     # ----------------------------------------------------------
     # 分节流水线（Task 12+）：大纲 + 逐节生成
