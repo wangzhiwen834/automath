@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -117,18 +118,35 @@ class TaskStore:
     # 原子写
     # ----------------------------------------------------------
     @staticmethod
+    def _atomic_replace(src: Path, dst: Path, retries: int = 6) -> None:
+        """os.replace 带重试。
+
+        Windows 上目标文件可能被短暂占用（uvicorn --reload 的 WatchFiles
+        扫描、杀毒软件），导致 PermissionError(WinError 5)。占用通常瞬时，
+        退避重试即可；重试耗尽才抛出。
+        """
+        for i in range(retries):
+            try:
+                os.replace(src, dst)
+                return
+            except PermissionError:
+                if i == retries - 1:
+                    raise
+                time.sleep(0.1 * (i + 1))
+
+    @staticmethod
     def _atomic_write_json(path: Path, data: dict) -> None:
         tmp = path.with_suffix(path.suffix + ".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+        TaskStore._atomic_replace(tmp, path)
 
     @staticmethod
     def _atomic_write_text(path: Path, text: str) -> None:
         tmp = path.with_suffix(path.suffix + ".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(text)
-        os.replace(tmp, path)
+        TaskStore._atomic_replace(tmp, path)
 
     # ----------------------------------------------------------
     # 创建任务
