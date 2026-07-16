@@ -17,3 +17,20 @@ def test_write_section(make_store_task):
     sec = {"id": "abstract", "title": "摘要", "points": ["概括"], "min_chars": 400, "context_hint": "all"}
     text = agent._write_section(RunContext(task=task, store=store), sec)
     assert "摘要" in text
+
+
+def test_assemble_order(make_store_task):
+    store, task = make_store_task("题目")
+    agent = WriterAgent(task, store, llm=FakeLLM([]))
+    texts = {"abstract": "A", "restatement": "B"}
+    order = [{"id": "abstract"}, {"id": "restatement"}]
+    paper = agent._assemble([(s, texts[s["id"]]) for s in order])
+    assert paper.index("A") < paper.index("B")
+
+
+def test_expand_section(make_store_task):
+    store, task = make_store_task("题目")
+    agent = WriterAgent(task, store, llm=FakeLLM(["扩充后的更长内容" + "y" * 600]))
+    sec = {"id": "abstract", "title": "摘要", "min_chars": 400, "points": []}
+    out = agent._expand_section(None, sec, "短")
+    assert len(out) > 400

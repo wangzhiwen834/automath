@@ -134,3 +134,14 @@ class WriterAgent(BaseAgent):
         text = self.llm.chat([Message("system", self.system_prompt), Message("user", prompt)])
         return text.strip()
 
+    def _assemble(self, section_texts: list[tuple[dict, str]]) -> str:
+        return "\n\n".join(t for _, t in section_texts).strip()
+
+    def _expand_section(self, ctx, section, text) -> str:
+        prompt = (
+            f"下面的论文章节【{section['title']}】过短，请扩写到至少 {section['min_chars']} 字，"
+            "保持与上游材料一致，不得编造。只输出扩写后的该节正文。\n\n"
+            f"【当前内容】\n{text}\n\n【材料】\n{self._section_context(ctx, section) if ctx else ''}"
+        )
+        return self.llm.chat([Message("system", self.system_prompt), Message("user", prompt)]).strip()
+
