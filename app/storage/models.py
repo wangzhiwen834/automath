@@ -82,7 +82,7 @@ class AgentRecord(BaseModel):
     artifact_path: str | None = None      # 相对任务目录的产物路径
     log_path: str | None = None
     retry_count: int = 0
-    review_score: int | None = None       # 审查打分 0-100
+    review_score: float | None = None      # 审查打分 0-100（允许小数，如 66.5）
     review_passed: bool | None = None
     summary: str | None = None            # 一句话摘要，供前端展示
     error: str | None = None
