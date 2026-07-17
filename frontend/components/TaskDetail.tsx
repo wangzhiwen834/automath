@@ -132,6 +132,12 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
                 <Download size={14} /> 下载PDF
               </a>
             )}
+            {status === "completed" && (
+              <a href={api.paperDocxUrl(taskId)} target="_blank"
+                className="bg-blue-600 text-white text-sm px-3 py-1.5 rounded-lg flex items-center gap-1.5 hover:bg-blue-700">
+                <Download size={14} /> 下载Word
+              </a>
+            )}
             <a href={api.paperHtmlUrl(taskId)} target="_blank"
               className="border border-[var(--border)] text-sm px-3 py-1.5 rounded-lg flex items-center gap-1.5 hover:bg-slate-50 text-slate-600">
               <Eye size={14} /> 预览

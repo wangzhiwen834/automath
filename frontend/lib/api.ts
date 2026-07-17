@@ -112,6 +112,7 @@ export const api = {
   figureUrl: (id: string, name: string) => `${API_BASE}/api/tasks/${id}/figures/${name}`,
   paperHtmlUrl: (id: string) => `${API_BASE}/api/tasks/${id}/paper.html`,
   paperPdfUrl: (id: string) => `${API_BASE}/api/tasks/${id}/paper.pdf`,
+  paperDocxUrl: (id: string) => `${API_BASE}/api/tasks/${id}/paper.docx`,
   wsUrl: (id: string) =>
     `${API_BASE.replace("http", "ws")}/ws/tasks/${id}`,
 };

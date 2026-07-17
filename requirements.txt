@@ -18,6 +18,8 @@ python-dotenv>=1.0.0
 
 # Paper export
 markdown>=3.6
+reportlab>=4.0          # PDF 导出（中文字体 + 公式图片）
+python-docx>=1.0        # Word(.docx) 导出
 
 # Scientific stack (used by solver agent to run generated code)
 numpy

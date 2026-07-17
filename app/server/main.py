@@ -414,6 +414,172 @@ def paper_pdf(task_id: str):
         raise HTTPException(500, f"PDF 导出失败（{e}）；可改用 /paper.html 在浏览器打印为 PDF")
 
 
+def _paper_to_docx(paper_md: str, figures_dir) -> "io.BytesIO":
+    """用 python-docx 把 paper.md 渲染成 Word 文档（中文字体，公式/图表内嵌）。
+
+    公式用 matplotlib mathtext 渲染为图片插入（行内 run.add_picture，行间居中），
+    与 PDF 一致地规范化 \\le/\\ge、去掉 \\text{中文标注}。
+    """
+    import io
+    import re as _re
+    import hashlib
+    import tempfile
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _plt
+    from docx import Document
+    from docx.shared import Pt, Cm
+    from docx.oxml.ns import qn
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    _fdir = tempfile.mkdtemp(prefix="docx_formula_")
+    _fcache: dict[str, str] = {}
+
+    def _fpng(latex: str, fontsize: int = 11) -> str:
+        key = f"{latex}|{fontsize}"
+        if key in _fcache:
+            return _fcache[key]
+        ltx = _re.sub(r"\\le(?!q)", r"\\leq", latex)
+        ltx = _re.sub(r"\\ge(?!q)", r"\\geq", ltx)
+        p = f"{_fdir}/{hashlib.md5(key.encode()).hexdigest()[:12]}.png"
+        fig = _plt.figure(figsize=(0.1, 0.1))
+        fig.text(0, 0, f"${ltx}$", fontsize=fontsize)
+        fig.savefig(p, format="png", dpi=200, transparent=True,
+                    bbox_inches="tight", pad_inches=0.02)
+        _plt.close(fig)
+        _fcache[key] = p
+        return p
+
+    def _add_runs_with_inline(paragraph, text: str):
+        """段落内处理行内公式 \\(...\\)/$...$：文本 run + 公式图片 run。"""
+        for part in _re.split(r"(\\\(.+?\\\)|(?<!\$)\$(?!\$).+?(?<!\$)\$(?!\$))", text):
+            if not part:
+                continue
+            m = _re.match(r"\\\((.+?)\\\)", part) or _re.match(r"\$(.+?)\$", part)
+            if m:
+                try:
+                    paragraph.add_run().add_picture(_fpng(m.group(1), fontsize=10), height=Pt(12))
+                except Exception:
+                    paragraph.add_run(part)
+            else:
+                paragraph.add_run(part)
+
+    def _add_display(latex: str):
+        ltx = latex.replace(r"\begin{aligned}", "").replace(r"\end{aligned}", "")
+        ltx = ltx.replace(r"&", "")
+        ltx = _re.sub(r"\\text\{[^}]*\}", "", ltx)
+        for part in [s.strip() for s in _re.split(r"\\\\", ltx) if s.strip()]:
+            try:
+                p = _fpng(part, fontsize=12)
+                para = doc.add_paragraph()
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                para.add_run().add_picture(p, height=Pt(16))
+            except Exception:
+                doc.add_paragraph(part)
+
+    doc = Document()
+    normal = doc.styles["Normal"]
+    normal.font.name = "Times New Roman"
+    normal.font.size = Pt(10.5)
+    normal.element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+
+    in_code = False
+    code_buf: list[str] = []
+    in_disp = False
+    disp_buf: list[str] = []
+    for line in paper_md.split("\n"):
+        if line.strip().startswith("```"):
+            if in_code:
+                p = doc.add_paragraph()
+                run = p.add_run("\n".join(code_buf))
+                run.font.name = "Consolas"
+                run.font.size = Pt(8.5)
+                code_buf = []
+                in_code = False
+            else:
+                in_code = True
+            continue
+        if in_code:
+            code_buf.append(line)
+            continue
+        if in_disp:
+            if line.strip().startswith("\\]"):
+                _add_display("\n".join(disp_buf))
+                disp_buf = []
+                in_disp = False
+            else:
+                disp_buf.append(line)
+            continue
+        st = line.strip()
+        if st.startswith("\\["):
+            rest = st[2:].strip()
+            if rest.endswith("\\]") and len(rest) > 2:
+                _add_display(rest[:-2].strip())
+            else:
+                in_disp = True
+                if rest:
+                    disp_buf.append(rest)
+            continue
+        s = line.rstrip()
+        st_strip = s.strip()
+        if st_strip.startswith("$$") and st_strip.endswith("$$") and len(st_strip) > 4:
+            try:
+                p = _fpng(st_strip[2:-2], fontsize=12)
+                para = doc.add_paragraph()
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                para.add_run().add_picture(p, height=Pt(16))
+            except Exception:
+                doc.add_paragraph(s)
+            continue
+        if s.startswith("# "):
+            doc.add_heading(s[2:], level=1)
+        elif s.startswith("## "):
+            doc.add_heading(s[3:], level=2)
+        elif s.startswith("### "):
+            doc.add_heading(s[4:], level=3)
+        elif s.startswith("!["):
+            m = _re.match(r"!\[[^\]]*\]\(([^)]+)\)", s)
+            if m:
+                fp = figures_dir / m.group(1).split("/")[-1]
+                if fp.exists():
+                    try:
+                        doc.add_picture(str(fp), width=Cm(12))
+                    except Exception:
+                        pass
+        elif s.strip():
+            _add_runs_with_inline(doc.add_paragraph(), s)
+    if in_code and code_buf:
+        p = doc.add_paragraph()
+        run = p.add_run("\n".join(code_buf))
+        run.font.name = "Consolas"
+        run.font.size = Pt(8.5)
+    if in_disp and disp_buf:
+        _add_display("\n".join(disp_buf))
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf
+
+
+@app.get("/api/tasks/{task_id}/paper.docx")
+def paper_docx(task_id: str):
+    """论文导出为 Word（.docx，中文字体，公式/图表内嵌）。"""
+    if not _store().exists(task_id):
+        raise HTTPException(404, "任务不存在")
+    paper = _store().read_artifact(task_id, "artifacts/paper.md")
+    if not paper:
+        raise HTTPException(404, "论文尚未生成")
+    try:
+        buf = _paper_to_docx(paper, _store().figures_dir(task_id))
+        return Response(buf.getvalue(),
+                        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        headers={"Content-Disposition": f'attachment; filename="paper_{task_id}.docx"'})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Word 导出失败（{e}）")
+
+
 def _render_paper_html(task_id: str) -> str:
     """把 paper.md 渲染成 HTML，图表转 base64 内嵌，公式用 MathJax。"""
     import base64
