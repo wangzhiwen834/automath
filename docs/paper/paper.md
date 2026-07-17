@@ -51,8 +51,31 @@
 
 ## 2 相关工作
 
-> *待文献调研完成后撰写。* 拟从以下五个方向综述并定位本文：（1）LLM 多智能体协作框架；（2）LLM 数学推理与代码执行智能体；（3）自动化数学/科学建模；（4）LLM 幻觉/编造缓解（验证与接地）；（5）CUMCM/建模竞赛自动化。
+本文工作与五个方向相关：LLM 多智能体协作框架、LLM 数学推理与代码执行智能体、自动化数学/科学建模、LLM 幻觉缓解与接地，以及数学建模竞赛自动化。
 
+### 2.1 LLM 多智能体协作框架
+
+多智能体协作通过角色分工与流程编排降低单一 LLM 的发散性。MetaGPT[1] 引入标准作业流程（SOP）与产品经理/架构师/工程师等角色，将协作结构化以减少幻觉式对话；AutoGen[2] 提出可组合的"可对话智能体"，通过灵活的对话拓扑求解任务；ChatDev[3] 将软件开发组织为编码/测试/审查的聊天驱动流水线；CAMEL[4] 用角色扮演的"inception prompting"研究智能体协作与涌现行为；AgentVerse[5] 动态组装智能体团队求解跨领域任务。这些工作的共性是角色流水线与对话或状态机驱动，但均面向通用软件或任务，不针对数学建模的"建模-求解-写作"专业链路，也缺乏对数值正确性的专门治理。本文将流水线特化为数学建模六阶段，并以文件状态机加三种人在回路模式编排，而非纯自由对话。
+
+### 2.2 LLM 数学推理与代码执行智能体
+
+将数值计算下放给程序执行是提升 LLM 数学正确性的主流思路。PAL[6] 与 Program of Thoughts[7] 让 LLM 生成程序作为推理轨迹、由解释器执行计算，将推理与计算解耦；ReAct[8] 提出推理与行动交织的范式，奠定工具调用基础；Toolformer[9] 让 LLM 自监督学习插入工具调用；Zhou 等[10] 实证 GPT-4 Code Interpreter 的数学成功主要归功于生成并执行代码，并提出基于代码的自验证（code-based self-verification）。这些工作证明"程序执行提升数值正确性"，但多止步于单步数值题，不覆盖论文写作与全文一致性。本文将代码执行嵌入求解器并叠加分层校验（程序化硬检查-LLM 自查-有界返修），并延伸至写作阶段的事实清单与分节一致性校验。
+
+### 2.3 自动化数学/科学建模
+
+AI Scientist[11] 实现端到端全自动科研（构思-实验-写论文-自动审稿）；Data Interpreter[12] 面向数据科学的长程互联任务，动态处理中间数据与任务依赖；LLM-SR[13] 用 LLM 编程加符号回归从数据中发现科学方程；MLAgentBench[14] 评测 LLM 智能体在 ML 实验上的能力；AutoSci[15] 以结构化持久记忆为核心覆盖全科研生命周期。这些系统实现了端到端含论文写作，但面向开放科研，不处理建模竞赛特有的"数值不得编造、须与求解结果对齐"约束，也无分节一致性校验。本文以"事实清单+一致性校验"显式防数值编造，并以"有界返修"控制成本。
+
+### 2.4 LLM 幻觉/编造缓解与接地
+
+幻觉缓解主要有统计投票与自反思两条路线。Self-Consistency[16] 采样多条推理路径并多数投票；Self-Refine[17] 与 Reflexion[18] 让 LLM 自生成反馈或反思失败经验并迭代修正；Chain-of-Verification[19] 让 LLM 自行生成验证问题并自答核对；RAG[20] 将生成接地到外部检索文档。这些方法多依赖纯 LLM 自反思或采样投票，缺乏客观程序化约束。本文引入程序化硬检查作为客观锚点，将 LLM 自查与返修"有界化"，避免无限反思与重复投票开销；同时采用"约束输出只用上游求解结果或给定数据"的"内接地"，适合竞赛闭卷场景而非外部检索。
+
+### 2.5 数学建模竞赛自动化
+
+Liu 等[21] 提出面向数学建模竞赛的"问题导向、分阶段"评测框架（基于中国研究生数学建模竞赛题目），揭示 LLM 的"理解-执行鸿沟"--早期阶段（识别/建模）表现好，执行阶段（求解/写代码/结果分析）弱；并诊断根因为"规格不足、缺校验、缺验证，错误跨阶段传播且无修正"。该工作为评测而非系统，且针对研究生赛（CUMCM 为本科生赛），但其诊断与本文动机高度契合。
+
+### 2.6 小结与本文定位
+
+综上，现有工作存在四类不足：(1) 多智能体框架面向通用任务，不针对数学建模专业链路与数值正确性；(2) 代码执行智能体止步于单步求解，不覆盖写作与全文一致性；(3) 自动科研系统不处理"数值不得编造、须与求解结果对齐"的竞赛约束；(4) 防幻觉方法缺乏客观程序化约束。最关键的是，Liu 等[21] 实证诊断了 LLM 在建模竞赛的"理解-执行鸿沟"与"错误跨阶段传播"根因，但仅止于评测。本文系统正是对该诊断的完整系统化回应：分阶段求解器与分层校验阻断错误跨阶段传播，总结师事实清单与写作一致性校验防数值编造，文件状态机与三种人在回路支持可控协作。这一"评测诊断到系统化补救"的对应关系，是本文区别于上述全部工作的核心定位。
 ---
 
 ## 3 系统架构
@@ -321,4 +344,46 @@ LLM 抽象层定义统一的 `chat()` 与 `stream()` 接口，底层适配两类
 
 ## 参考文献
 
-> *待相关工作调研完成后按 GB/T 7714 或 APA 7.0 格式补充。*
+[1] Hong S, Zhong J, Chen C, 等. MetaGPT: Meta Programming for a Multi-Agent Collaborative Framework[J]. arXiv:2308.00352, 2023.
+
+[2] Wu Q, Bansal G, Zhang J, 等. AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation[J]. arXiv:2308.08155, 2023.
+
+[3] Qian C, Cong X, Liu W, 等. Communicative Agents for Software Development[J]. arXiv:2307.07924, 2023.
+
+[4] Li G, Hammoud H A, Itani H, 等. CAMEL: Communicative Agents for "Mind" Exploration of Large Language Model Society[J]. arXiv:2303.17760, 2023.
+
+[5] Chen W, Su Y, Zuo J, 等. AgentVerse: Facilitating Multi-Agent Collaboration and Exploring Emergent Behaviors[J]. arXiv:2308.10848, 2023.
+
+[6] Gao L, Madaan A, Zhang R, 等. PAL: Program-aided Language Models[J]. arXiv:2211.10435, 2022.
+
+[7] Chen W, Yin M, Ku M, 等. Program of Thoughts Prompting: Disentangling Computation from Reasoning for Numerical Reasoning Tasks[J]. arXiv:2211.12588, 2022.
+
+[8] Yao S, Zhao J, Yu D, 等. ReAct: Synergizing Reasoning and Acting in Language Models[J]. arXiv:2210.03629, 2022.
+
+[9] Schick T, Dwivedi-Yu J, Dessì R, 等. Toolformer: Language Models Can Teach Themselves to Use Tools[J]. arXiv:2302.04761, 2023.
+
+[10] Zhou A, Yan Y, Shlapentokh-Rothman M, 等. Solving Challenging Math Word Problems Using GPT-4 Code Interpreter with Code-based Self-Verification[J]. arXiv:2308.07921, 2023.
+
+[11] Lu C, Lu C, Lange R T, 等. The AI Scientist: Towards Fully Automated Open-Ended Scientific Discovery[J]. arXiv:2408.06292, 2024.
+
+[12] Hong S, Lin Y, Liu Z, 等. Data Interpreter: An LLM Agent For Data Science[J]. arXiv:2402.18679, 2024.
+
+[13] Shojaee P, Jain A, Tipirneni S, 等. LLM-SR: Scientific Equation Discovery via Programming with Large Language Models[J]. arXiv:2404.18400, 2024.
+
+[14] Huang Q, Vora J, Liang J, 等. MLAgentBench: Evaluating Language Agents on Machine Learning Experimentation[J]. arXiv:2310.03302, 2023.
+
+[15] Qian W, 等. AutoSci: A Memory-Centric Agentic System for the Full Scientific Research Lifecycle[J]. arXiv:2605.31468, 2026.
+
+[16] Wang X, Wei J, Schuurmans D, 等. Self-Consistency Improves Chain of Thought Reasoning in Language Models[J]. arXiv:2203.11171, 2022.
+
+[17] Madaan A, Tandon N, Gupta P, 等. Self-Refine: Iterative Refinement with Self-Feedback[J]. arXiv:2303.17651, 2023.
+
+[18] Shinn N, Cassano F, Berman E, 等. Reflexion: Language Agents with Verbal Reinforcement Learning[J]. arXiv:2303.11366, 2023.
+
+[19] Dhuliawala S, Komeili M, Xu J, 等. Chain-of-Verification Reduces Hallucination in Large Language Models[J]. arXiv:2309.11495, 2023.
+
+[20] Lewis P, Perez E, Piktus A, 等. Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks[J]. arXiv:2005.11401, 2020.
+
+[21] Liu Y, Huang H, Yang Y, 等. How Far Are We? Systematic Evaluation of LLMs vs. Human Experts in Mathematical Contest in Modeling[J]. arXiv:2604.04791, 2026.
+
+> 注：以上 arXiv 编号经 arXiv 官方 API 核实；会议/期刊正式归属部分待投稿前核对（如 ICLR/NeurIPS/ACL proceedings）。[15][21] 为 2026 年新预印本，引用前请确认最新版本与是否被会议接收。
