@@ -156,25 +156,12 @@ class Orchestrator:
                 if passed:
                     return self._finish(task, score=score, note=None)
 
-                # 不通过：判断是否还能回退
-                if rollback_to and task.state.review_round < max_retries:
-                    task.state.review_round += 1
-                    issues = review.get("issues", [])
-                    next_feedback = "审查不通过。问题：" + "；".join(issues) if issues else "审查不通过，请改进。"
-                    try:
-                        idx = AGENT_ORDER.index(AgentName(rollback_to))
-                    except (ValueError, TypeError):
-                        idx = 0
-                    task.state.rollback_to = None
-                    self.store.save(task)
-                    self._emit({"type": "rollback", "to": rollback_to,
-                                "round": task.state.review_round})
-                    continue
-                else:
-                    return self._finish(
-                        task, score=score,
-                        note="审查未通过但已达最大重试次数，输出当前最优结果",
-                    )
+                # 不通过：不再自动回退重做，直接结束并输出当前结果。
+                # 审查意见/issues/建议回退的 agent 仍记录在 review.md 供人工参考。
+                note = "审查未通过"
+                if rollback_to:
+                    note += f"，建议回退到 {rollback_to}（如需改进请手动重做）"
+                return self._finish(task, score=score, note=note)
 
             # ---------- 普通 Agent：检查点判断 ----------
             checkpoints = CHECKPOINTS.get(task.meta.mode, set())
