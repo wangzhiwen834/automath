@@ -20,6 +20,8 @@ python-dotenv>=1.0.0
 markdown>=3.6
 reportlab>=4.0          # PDF 导出（中文字体 + 公式图片）
 python-docx>=1.0        # Word(.docx) 导出
+latex2mathml>=3.0       # LaTeX -> MathML（Word 公式）
+mathml2omml>=0.0.2      # MathML -> OMML（Word 原生可编辑公式）
 
 # Scientific stack (used by solver agent to run generated code)
 numpy

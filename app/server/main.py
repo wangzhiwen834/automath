@@ -415,51 +415,45 @@ def paper_pdf(task_id: str):
 
 
 def _paper_to_docx(paper_md: str, figures_dir) -> "io.BytesIO":
-    """用 python-docx 把 paper.md 渲染成 Word 文档（中文字体，公式/图表内嵌）。
+    """用 python-docx 把 paper.md 渲染成 Word 文档（中文字体，公式为 OMML 可编辑文字，图表内嵌）。
 
-    公式用 matplotlib mathtext 渲染为图片插入（行内 run.add_picture，行间居中），
-    与 PDF 一致地规范化 \\le/\\ge、去掉 \\text{中文标注}。
+    公式用 latex2mathml + mathml2omml 转成 OMML（Word 原生公式，可编辑），
+    转换失败 fallback 原始 LaTeX 文本。
     """
     import io
     import re as _re
-    import hashlib
-    import tempfile
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as _plt
+    import latex2mathml.converter
+    import mathml2omml
     from docx import Document
     from docx.shared import Pt, Cm
+    from docx.oxml import parse_xml
     from docx.oxml.ns import qn
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-    _fdir = tempfile.mkdtemp(prefix="docx_formula_")
-    _fcache: dict[str, str] = {}
+    _M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 
-    def _fpng(latex: str, fontsize: int = 11) -> str:
-        key = f"{latex}|{fontsize}"
-        if key in _fcache:
-            return _fcache[key]
-        ltx = _re.sub(r"\\le(?!q)", r"\\leq", latex)
-        ltx = _re.sub(r"\\ge(?!q)", r"\\geq", ltx)
-        p = f"{_fdir}/{hashlib.md5(key.encode()).hexdigest()[:12]}.png"
-        fig = _plt.figure(figsize=(0.1, 0.1))
-        fig.text(0, 0, f"${ltx}$", fontsize=fontsize)
-        fig.savefig(p, format="png", dpi=200, transparent=True,
-                    bbox_inches="tight", pad_inches=0.02)
-        _plt.close(fig)
-        _fcache[key] = p
-        return p
+    def _omath(latex: str):
+        """LaTeX -> OMML m:oMath 元素（Word 原生可编辑公式）。失败返回 None。"""
+        try:
+            mathml = latex2mathml.converter.convert(latex)
+            omml = mathml2omml.convert(mathml)
+            if "xmlns:m" not in omml:
+                omml = omml.replace("<m:oMath>", f'<m:oMath xmlns:m="{_M_NS}">', 1)
+            return parse_xml(omml)
+        except Exception:
+            return None
 
     def _add_runs_with_inline(paragraph, text: str):
-        """段落内处理行内公式 \\(...\\)/$...$：文本 run + 公式图片 run。"""
+        """段落内处理行内公式 \\(...\\)/$...$：文本 run + OMML 公式。"""
         for part in _re.split(r"(\\\(.+?\\\)|(?<!\$)\$(?!\$).+?(?<!\$)\$(?!\$))", text):
             if not part:
                 continue
             m = _re.match(r"\\\((.+?)\\\)", part) or _re.match(r"\$(.+?)\$", part)
             if m:
-                try:
-                    paragraph.add_run().add_picture(_fpng(m.group(1), fontsize=10), height=Pt(12))
-                except Exception:
+                omath = _omath(m.group(1))
+                if omath is not None:
+                    paragraph._p.append(omath)
+                else:
                     paragraph.add_run(part)
             else:
                 paragraph.add_run(part)
@@ -469,13 +463,13 @@ def _paper_to_docx(paper_md: str, figures_dir) -> "io.BytesIO":
         ltx = ltx.replace(r"&", "")
         ltx = _re.sub(r"\\text\{[^}]*\}", "", ltx)
         for part in [s.strip() for s in _re.split(r"\\\\", ltx) if s.strip()]:
-            try:
-                p = _fpng(part, fontsize=12)
-                para = doc.add_paragraph()
-                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                para.add_run().add_picture(p, height=Pt(16))
-            except Exception:
-                doc.add_paragraph(part)
+            omath = _omath(part)
+            para = doc.add_paragraph()
+            para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            if omath is not None:
+                para._p.append(omath)
+            else:
+                para.add_run(part)
 
     doc = Document()
     normal = doc.styles["Normal"]
@@ -523,13 +517,13 @@ def _paper_to_docx(paper_md: str, figures_dir) -> "io.BytesIO":
         s = line.rstrip()
         st_strip = s.strip()
         if st_strip.startswith("$$") and st_strip.endswith("$$") and len(st_strip) > 4:
-            try:
-                p = _fpng(st_strip[2:-2], fontsize=12)
-                para = doc.add_paragraph()
-                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                para.add_run().add_picture(p, height=Pt(16))
-            except Exception:
-                doc.add_paragraph(s)
+            omath = _omath(st_strip[2:-2])
+            para = doc.add_paragraph()
+            para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            if omath is not None:
+                para._p.append(omath)
+            else:
+                para.add_run(s)
             continue
         if s.startswith("# "):
             doc.add_heading(s[2:], level=1)
