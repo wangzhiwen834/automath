@@ -209,19 +209,110 @@ def paper_html(task_id: str):
     return Response(html, media_type="text/html; charset=utf-8")
 
 
+def _paper_to_pdf(paper_md: str, figures_dir) -> "io.BytesIO":
+    """用 reportlab 把 paper.md 渲染成 PDF（中文字体直接加载，避免 xhtml2pdf 黑框）。
+
+    xhtml2pdf 的 @font-face 在 Windows 上把字体写 temp 再用 reportlab 打开，
+    temp 权限错且中文字体不嵌入 -> 中文变黑框■。改用 reportlab Platypus 直接生成，
+    注册 SimHei/SimFang 字体渲染中文。公式/表格以近似文本呈现（精确公式见 paper.html）。
+    """
+    import io
+    import re as _re
+    from xml.sax.saxutils import escape
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Preformatted
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.lib.units import cm
+
+    registered = pdfmetrics.getRegisteredFontNames()
+    if "SimHei" not in registered:
+        try:
+            pdfmetrics.registerFont(TTFont("SimHei", "C:/Windows/Fonts/simhei.ttf"))
+        except Exception:
+            pass
+    if "SimFang" not in registered:
+        try:
+            pdfmetrics.registerFont(TTFont("SimFang", "C:/Windows/Fonts/simfang.ttf"))
+        except Exception:
+            pass
+
+    def _inline(text: str) -> str:
+        """转义 + 处理 **粗体** -> <b>（Paragraph 支持 XML 标记）。"""
+        text = escape(text)
+        text = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+        return text
+
+    cn_font = "SimFang" if "SimFang" in pdfmetrics.getRegisteredFontNames() else "Helvetica"
+    he_font = "SimHei" if "SimHei" in pdfmetrics.getRegisteredFontNames() else cn_font
+    styles = {
+        "h1": ParagraphStyle("h1", fontName=he_font, fontSize=16, alignment=1, spaceAfter=10, leading=22),
+        "h2": ParagraphStyle("h2", fontName=he_font, fontSize=14, spaceBefore=10, spaceAfter=6, leading=20),
+        "h3": ParagraphStyle("h3", fontName=he_font, fontSize=12, spaceBefore=6, spaceAfter=4, leading=18),
+        "body": ParagraphStyle("body", fontName=cn_font, fontSize=10.5, leading=18, spaceAfter=4),
+        "code": ParagraphStyle("code", fontName="Courier", fontSize=8.5, leading=11),
+    }
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=2 * cm, bottomMargin=2 * cm,
+                            leftMargin=2 * cm, rightMargin=2 * cm)
+    story = []
+    in_code = False
+    code_buf: list[str] = []
+    for line in paper_md.split("\n"):
+        if line.strip().startswith("```"):
+            if in_code:
+                story.append(Preformatted(escape("\n".join(code_buf)), styles["code"]))
+                story.append(Spacer(1, 6))
+                code_buf = []
+                in_code = False
+            else:
+                in_code = True
+            continue
+        if in_code:
+            code_buf.append(line)
+            continue
+        s = line.rstrip()
+        if s.startswith("# "):
+            story.append(Paragraph(_inline(s[2:]), styles["h1"]))
+        elif s.startswith("## "):
+            story.append(Paragraph(_inline(s[3:]), styles["h2"]))
+        elif s.startswith("### "):
+            story.append(Paragraph(_inline(s[4:]), styles["h3"]))
+        elif s.startswith("!["):
+            m = _re.match(r"!\[[^\]]*\]\(([^)]+)\)", s)
+            if m:
+                fp = figures_dir / m.group(1).split("/")[-1]
+                if fp.exists():
+                    try:
+                        img = Image(str(fp), width=14 * cm, height=10 * cm)
+                        img._restrictSize(14 * cm, 10 * cm)
+                        story.append(img)
+                        story.append(Spacer(1, 6))
+                    except Exception:
+                        pass
+        elif s.strip():
+            story.append(Paragraph(_inline(s), styles["body"]))
+        else:
+            story.append(Spacer(1, 4))
+    if in_code and code_buf:
+        story.append(Preformatted(escape("\n".join(code_buf)), styles["code"]))
+    doc.build(story)
+    buf.seek(0)
+    return buf
+
+
 @app.get("/api/tasks/{task_id}/paper.pdf")
 def paper_pdf(task_id: str):
-    """论文导出为 PDF（服务端渲染，图表内嵌）。"""
+    """论文导出为 PDF（reportlab 渲染，中文字体，图表内嵌）。"""
     if not _store().exists(task_id):
         raise HTTPException(404, "任务不存在")
-    html = _render_paper_html(task_id)
+    paper = _store().read_artifact(task_id, "artifacts/paper.md")
+    if not paper:
+        raise HTTPException(404, "论文尚未生成")
     try:
-        from xhtml2pdf import pisa
-        import io
-        buf = io.BytesIO()
-        pisa_status = pisa.CreatePDF(io.StringIO(html), dest=buf, encoding="utf-8")
-        if pisa_status.err:
-            raise HTTPException(500, f"PDF 渲染出错: {pisa_status.err}")
+        buf = _paper_to_pdf(paper, _store().figures_dir(task_id))
         return Response(buf.getvalue(), media_type="application/pdf",
                         headers={"Content-Disposition": f'attachment; filename="paper_{task_id}.pdf"'})
     except HTTPException:
@@ -262,9 +353,11 @@ def _render_paper_html(task_id: str) -> str:
 displayMath: [['$$','$$'],['\\\\[','\\\\]']]}}}};</script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 <style>
-body {{ font-family: 'SimSun','Times New Roman',serif; line-height:1.8; max-width:780px; margin:40px auto; padding:0 20px; }}
-h1 {{ font-size:20px; text-align:center; }}
-h2 {{ font-size:16px; }} h3 {{ font-size:14px; }}
+@font-face {{ font-family: 'SimFang'; src: url('C:/Windows/Fonts/simfang.ttf'); }}
+@font-face {{ font-family: 'SimHei'; src: url('C:/Windows/Fonts/simhei.ttf'); }}
+body {{ font-family: 'SimFang','SimHei','Times New Roman',serif; line-height:1.8; max-width:780px; margin:40px auto; padding:0 20px; }}
+h1 {{ font-size:20px; text-align:center; font-family: 'SimHei','SimFang',serif; }}
+h2 {{ font-size:16px; font-family: 'SimHei','SimFang',serif; }} h3 {{ font-size:14px; font-family: 'SimHei','SimFang',serif; }}
 img {{ display:block; margin:12px auto; }}
 table {{ border-collapse:collapse; width:100%; }}
 td,th {{ border:1px solid #999; padding:6px; }}
