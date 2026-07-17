@@ -75,6 +75,7 @@ class SolverAgent(BaseAgent):
             "你是一名数值计算与 Python 编程专家。\n"
             "根据数学模型编写可运行的 Python 求解代码。\n\n"
             "硬性要求（违反将导致执行失败）：\n"
+            "- 必须严格使用原题与模型中给定的目标函数、变量、约束，禁止替换为其他函数或编造问题参数；代码实现的目标函数必须与模型完全一致，跑题将被判失败。\n"
             "- 代码控制在 200 行以内，专注数值求解。\n"
             "- 只输出一个完整的 Python 代码块（```python 围栏），代码块外不要写文字。\n"
             "- 所有字符串字面量（print/label/注释）引号必须闭合；matplotlib 的标题/标签一律用英文，避免中文编码报错。\n"
@@ -110,14 +111,19 @@ class SolverAgent(BaseAgent):
     # ----------------------------------------------------------
     # 阶段执行流水线：生成 -> 语法预检 -> 执行 -> 硬校验 -> 有界修复
     # ----------------------------------------------------------
-    def _gen_code(self, sub, stage, prev_outputs: str, hint: str = "") -> str:
+    def _gen_code(self, ctx, sub, stage, prev_outputs: str, hint: str = "") -> str:
+        problem = self._problem(ctx)
+        model = self._prior(ctx, AgentName.MODELER)
         prompt = (
             f"为子问题 {sub['id']}（{sub.get('title','')}）的阶段【{stage['name']}】写 Python 代码。\n"
             f"阶段目标：{stage['goal']}\n方法：{stage['method']}\n"
             f"输入文件（在当前工作目录读取）：{stage.get('input_files')}\n"
             f"输出文件：{stage.get('output_file') or '（无）'}\n"
             f"预期图表：{stage.get('figures')}\n\n"
+            f"【原题】\n{problem}\n\n"
+            f"【模型核心】（目标函数/变量/约束必须严格据此实现，禁止替换或编造）\n{model[:2000]}\n\n"
             "硬性要求：\n"
+            "- 代码实现的目标函数、变量、约束必须与【模型核心】完全一致，禁止替换为其他函数或编造问题参数（跑题将直接判失败）。\n"
             "- 只输出一个 ```python 代码块；matplotlib 用英文标签；画图 savefig 到 artifacts/figures/<名> 后 close。\n"
             "- 代码末尾必须 print 一行 `STAGE_RESULT: <json>`，含 ok(布尔)/metrics(数值dict)/files(产出文件名list)/figures(图文件名list)。\n"
             "- 用相对路径读写文件（当前工作目录即本子问题目录）。\n\n"
@@ -136,11 +142,15 @@ class SolverAgent(BaseAgent):
         text = self.llm.chat([Message("system", self.system_prompt), Message("user", prompt)])
         return extract_python(text)
 
-    def _fix_code(self, code: str, error: str) -> str:
+    def _fix_code(self, ctx, code: str, error: str) -> str:
+        problem = self._problem(ctx)
+        model = self._prior(ctx, AgentName.MODELER)
         msg = [
             Message("system", self.system_prompt),
             Message("user", (
-                "之前代码有问题，请修复后输出完整代码（仍只一个代码块，末尾保留 STAGE_RESULT 行）。\n\n"
+                "之前代码有问题，请修复后输出完整代码（仍只一个代码块，末尾保留 STAGE_RESULT 行）。\n"
+                "修复时必须确保目标函数/变量/约束与原题和模型完全一致，不得替换或编造。\n\n"
+                f"【原题】\n{problem}\n\n【模型核心】\n{model[:2000]}\n\n"
                 f"【原代码】\n```python\n{code}\n```\n\n【问题】\n{error}\n"
             )),
         ]
@@ -187,7 +197,7 @@ class SolverAgent(BaseAgent):
         last_error = ""
         for _ in range(max_regen):
             attempts += 1
-            code = self._gen_code(sub, stage, prev_outputs, hint=hint) if attempts == 1 else self._fix_code(code, last_error)
+            code = self._gen_code(ctx, sub, stage, prev_outputs, hint=hint) if attempts == 1 else self._fix_code(ctx, code, last_error)
             code = inject_preamble(code, seed=seed)
             script = sub_dir / f"{stage['name']}.py"
             script.write_text(code, encoding="utf-8")
