@@ -4,7 +4,7 @@ import Link from "next/link";
 import {
   ArrowLeft, Search, FunctionSquare, Terminal, FileText, ShieldCheck,
   Download, Eye, Play, CheckCircle2, AlertTriangle, FileUp, Image as ImageIcon,
-  RotateCcw, Cpu, History,
+  RotateCcw, Cpu, History, ClipboardList,
 } from "lucide-react";
 import NavBar from "@/components/NavBar";
 import { StatusBadge } from "@/components/ui";
@@ -13,7 +13,7 @@ import { api, AGENT_ORDER, AGENT_LABELS, type TaskDetail as TaskDetailT, type Ag
 import { useTaskEvents } from "@/lib/useTaskEvents";
 
 const AGENT_ICONS: Record<AgentName, any> = {
-  analyst: Search, modeler: FunctionSquare, solver: Terminal, writer: FileText, reviewer: ShieldCheck,
+  analyst: Search, modeler: FunctionSquare, solver: Terminal, summarizer: ClipboardList, writer: FileText, reviewer: ShieldCheck,
 };
 
 const AGENT_STATUS_STYLE: Record<string, string> = {

@@ -2,7 +2,7 @@
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
-export type AgentName = "analyst" | "modeler" | "solver" | "writer" | "reviewer";
+export type AgentName = "analyst" | "modeler" | "solver" | "summarizer" | "writer" | "reviewer";
 export type TaskStatus = "created" | "running" | "paused" | "completed" | "failed" | "cancelled";
 export type RunMode = "auto" | "interactive" | "hybrid";
 
@@ -61,11 +61,12 @@ export const AGENT_LABELS: Record<AgentName, string> = {
   analyst: "问题分析",
   modeler: "建模",
   solver: "求解",
+  summarizer: "总结",
   writer: "写作",
   reviewer: "审查",
 };
 
-export const AGENT_ORDER: AgentName[] = ["analyst", "modeler", "solver", "writer", "reviewer"];
+export const AGENT_ORDER: AgentName[] = ["analyst", "modeler", "solver", "summarizer", "writer", "reviewer"];
 
 export const MODE_LABELS: Record<RunMode, string> = {
   auto: "A 全自动",

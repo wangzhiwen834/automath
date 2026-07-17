@@ -99,15 +99,11 @@ class WriterAgent(BaseAgent):
     # ----------------------------------------------------------
     def _make_outline(self, ctx) -> list[dict]:
         problem = self._problem(ctx)
-        analysis = self._prior(ctx, AgentName.ANALYST)
-        model = self._prior(ctx, AgentName.MODELER)
-        solver_out = ctx.solution_stdout or "(无)"
-        figs = ", ".join(ctx.figures) if ctx.figures else "(无)"
+        facts = self._facts(ctx) or "(无)"
         prompt = (
             "为数学建模论文拟定大纲。固定章节及最小字数：\n"
             + "\n".join(f"- {sid}: {title} (≥{mc}字)" for sid, title, mc in self.SECTIONS) + "\n\n"
-            f"【题目】{problem}\n【分析】{analysis[:1500]}\n【模型】{model[:1500]}\n"
-            f"【求解结果】{solver_out[:1500]}\n【图表】{figs}\n\n"
+            f"【题目】{problem}\n【事实清单】{facts[:3000]}\n\n"
             "只输出 JSON 数组，每项 {id,title,points(要点list),min_chars,context_hint}。"
         )
         text = self.llm.chat([Message("system", "你是论文大纲设计者。只输出 JSON。"),
@@ -122,16 +118,23 @@ class WriterAgent(BaseAgent):
         return [{"id": sid, "title": title, "points": [], "min_chars": mc, "context_hint": "all"}
                 for sid, title, mc in self.SECTIONS]
 
+    def _facts(self, ctx) -> str:
+        """总结师的事实清单（写作的权威数据源，含已核对的数值/结论/图/一致性）。"""
+        return ctx.artifacts.get(AgentName.SUMMARIZER.value, "") or ""
+
     def _section_context(self, ctx, section) -> str:
         sid = section["id"]
+        facts = self._facts(ctx)
+        # 优先基于事实清单写作（数值已由总结师从求解结果提炼并核对），避免编造
         if sid == "abstract":
-            return f"分析摘要：{self._prior(ctx, AgentName.ANALYST)[:800]}\n求解结果：{ctx.solution_stdout or ''}"
+            return f"【事实清单】\n{facts}\n\n【分析补充】{self._prior(ctx, AgentName.ANALYST)[:600]}"
         if sid == "solving":
-            return (f"模型：{self._prior(ctx, AgentName.MODELER)}\n"
-                    f"求解结果：{ctx.solution_stdout or ''}\n图表：{ctx.figures}")
+            return f"【事实清单】\n{facts}\n\n【模型补充】{self._prior(ctx, AgentName.MODELER)[:1500]}"
+        if sid == "evaluation":
+            return f"【事实清单】\n{facts}"
         if sid == "appendix":
-            return f"求解代码/manifest：{ctx.artifacts.get('solver', '')[:3000]}"
-        return f"题目：{self._problem(ctx)}\n分析：{self._prior(ctx, AgentName.ANALYST)[:1000]}"
+            return f"【求解代码】\n{ctx.artifacts.get('solver', '')[:3000]}"
+        return f"【题目】{self._problem(ctx)}\n\n【事实清单】\n{facts}"
 
     def _write_section(self, ctx, section) -> str:
         figs_info = ""
@@ -161,14 +164,14 @@ class WriterAgent(BaseAgent):
     # 一致性校验 + 有界返修（Task 14）
     # ----------------------------------------------------------
     def _consistency_check(self, ctx, paper) -> dict:
-        solver_out = ctx.solution_stdout or ""
-        fabricated = cross_check_numbers(paper, solver_out)
+        facts = self._facts(ctx) or ""
+        # 用事实清单核对（干净，无代码数字污染），比核对待代码的 output.txt 准确
+        fabricated = cross_check_numbers(paper, facts)
         prompt = (
-            "把论文与上游分析/模型/求解结果对照，检查：方法/模型是否与建模一致、结论是否有结果支撑、"
-            "是否跑题夹带无关内容、有无过度推断。只输出 JSON：\n"
+            "把论文与事实清单对照，检查：论文数值是否都在事实清单中（不得编造）、"
+            "结论是否有事实支撑、极大极小是否混淆、是否论述了不存在的图、是否跑题夹带无关内容。只输出 JSON：\n"
             '```json\n{"offending_sections":[{"section":"abstract","issues":["..."]}],"off_topic":false,"fabricated_numbers":[]}\n```'
-            f"\n\n【论文】\n{paper[:4000]}\n\n【求解结果】\n{solver_out[:2000]}\n"
-            f"【分析】\n{self._prior(ctx, AgentName.ANALYST)[:1500]}\n【模型】\n{self._prior(ctx, AgentName.MODELER)[:1500]}"
+            f"\n\n【论文】\n{paper[:4000]}\n\n【事实清单】\n{facts[:3000]}\n"
         )
         text = self.llm.chat([Message("system", "你是论文一致性审查者。只输出 JSON。"), Message("user", prompt)])
         m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)

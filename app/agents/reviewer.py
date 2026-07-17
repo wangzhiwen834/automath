@@ -28,8 +28,8 @@ class ReviewerAgent(BaseAgent):
             "★★★ 硬性规则（必须执行，不可通融）：\n"
             "1. 若【求解执行状态】为失败或无输出，solving 项直接给 ≤30 分，"
             "passed 必须为 false，rollback_to 必须为 \"solver\"。理由：代码没跑通=没有真实结果，论文数值不可信。\n"
-            "2. 打分必须基于证据：solving 的分数取决于【求解结果输出】中是否有具体数字。"
-            "若论文里的数值在求解输出中找不到对应，视为编造，solving 扣分。\n"
+            "2. 打分必须基于证据：以【事实清单】为准核对论文数值。若论文数值与事实清单不符（编造）、"
+            "极大极小混淆、论述了不存在的图，solving 直接给 ≤30 分，passed 必须为 false，rollback_to 必须为 \"writer\"。\n"
             "3. 不要被论文的流畅程度欺骗——重点核对结论是否有真实求解支撑。\n"
             "4. 总分 overall_score 取各维度加权（solving 权重更高，占 30%）。通过线 75。\n\n"
             "只输出一个 JSON 代码块（```json 围栏），格式：\n"
@@ -49,8 +49,8 @@ class ReviewerAgent(BaseAgent):
 
     def build_user_prompt(self, ctx) -> str:
         problem = self._problem(ctx)
-        analysis = self._prior(ctx, AgentName.ANALYST)
-        model = self._prior(ctx, AgentName.MODELER)
+        # 事实清单：总结师提炼的权威数值/结论/图，以此为准核对论文
+        facts = self._prior(ctx, AgentName.SUMMARIZER)
         paper = self._prior(ctx, AgentName.WRITER)
         executed = ctx.solution_executed
         if executed is True:
@@ -59,7 +59,6 @@ class ReviewerAgent(BaseAgent):
             exec_status = f"失败（代码未能成功执行。错误: {ctx.solution_error or '未知'}）"
         else:
             exec_status = "未知（无求解记录）"
-        solver_out = ctx.solution_stdout or "(无输出——求解未执行成功)"
         # 逐子问题阶段状态（若 status.json 存在）
         status_text = ""
         status_raw = self.store.read_solution_file(self.task.meta.task_id, "status.json")
@@ -75,13 +74,12 @@ class ReviewerAgent(BaseAgent):
                 pass
         return (
             f"【题目】\n{problem}\n\n"
-            f"【问题分析】\n{analysis}\n\n"
-            f"【数学模型】\n{model}\n\n"
+            f"【事实清单】（总结师提炼的权威数值/结论/图，以此为准）\n{facts}\n\n"
             f"【求解执行状态】{exec_status}\n\n"
             f"{status_text}"
-            f"【求解结果输出】\n{solver_out}\n\n"
             f"【论文全文】\n{paper}\n\n"
-            "请严格审查并输出评分 JSON。务必先核对求解执行状态与输出，再打分。"
+            "请严格审查并输出评分 JSON。重点核对：论文数值是否与事实清单一致（不符=编造）、"
+            "极大极小是否混淆、是否论述不存在的图。先核对事实清单与论文，再打分。"
         )
 
     def postprocess(self, ctx, text: str) -> tuple[str, str, dict]:

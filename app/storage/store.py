@@ -45,6 +45,7 @@ ARTIFACT_NAMES = {
     AgentName.ANALYST: "analysis.md",
     AgentName.MODELER: "model.md",
     AgentName.SOLVER: "solution",     # 目录，内含 solve.py + output
+    AgentName.SUMMARIZER: "facts.md",  # 事实清单（求解后、写作前）
     AgentName.WRITER: "paper.md",
     AgentName.REVIEWER: "review.md",
 }

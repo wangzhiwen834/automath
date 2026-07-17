@@ -43,6 +43,7 @@ class AgentName(str, Enum):
     ANALYST = "analyst"        # 问题分析
     MODELER = "modeler"        # 建模
     SOLVER = "solver"          # 求解（写代码+执行）
+    SUMMARIZER = "summarizer"  # 总结事实清单（求解后、写作前）
     WRITER = "writer"          # 写论文
     REVIEWER = "reviewer"      # 审查
 
@@ -60,6 +61,7 @@ AGENT_ORDER = [
     AgentName.ANALYST,
     AgentName.MODELER,
     AgentName.SOLVER,
+    AgentName.SUMMARIZER,
     AgentName.WRITER,
     AgentName.REVIEWER,
 ]

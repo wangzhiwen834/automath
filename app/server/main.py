@@ -107,6 +107,7 @@ ARTIFACT_MAP = {
     "analyst": "artifacts/analysis.md",
     "modeler": "artifacts/model.md",
     "solver": "artifacts/solution/output.txt",
+    "summarizer": "artifacts/facts.md",
     "writer": "artifacts/paper.md",
     "reviewer": "artifacts/review.md",
 }
