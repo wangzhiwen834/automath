@@ -238,11 +238,67 @@ def _paper_to_pdf(paper_md: str, figures_dir) -> "io.BytesIO":
         except Exception:
             pass
 
+    # 用 matplotlib mathtext 渲染 LaTeX 公式为 PNG（缓存），行内嵌入 <img>、行间用 Image
+    import hashlib
+    import tempfile
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _plt
+    _formula_dir = tempfile.mkdtemp(prefix="pdf_formula_")
+    _formula_cache: dict[str, str] = {}
+
+    def _formula_png(latex: str, fontsize: int = 11) -> str:
+        key = f"{latex}|{fontsize}"
+        if key in _formula_cache:
+            return _formula_cache[key]
+        # matplotlib mathtext 不支持 \le \ge（需 \leq \geq），规范化
+        ltx = _re.sub(r"\\le(?!q)", r"\\leq", latex)
+        ltx = _re.sub(r"\\ge(?!q)", r"\\geq", ltx)
+        h = hashlib.md5(key.encode()).hexdigest()[:12]
+        p = f"{_formula_dir}/{h}.png"
+        fig = _plt.figure(figsize=(0.1, 0.1))
+        fig.text(0, 0, f"${ltx}$", fontsize=fontsize)
+        fig.savefig(p, format="png", dpi=200, transparent=True,
+                    bbox_inches="tight", pad_inches=0.02)
+        _plt.close(fig)
+        _formula_cache[key] = p
+        return p
+
     def _inline(text: str) -> str:
-        """转义 + 处理 **粗体** -> <b>（Paragraph 支持 XML 标记）。"""
+        """转义 + **粗体** -> <b> + 行内公式 -> <img>。"""
         text = escape(text)
         text = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+
+        def _fimg(m):
+            try:
+                p = _formula_png(m.group(1))
+                return f'<img src="{p}" valign="middle" height="11"/>'
+            except Exception:
+                return m.group(0)
+        text = _re.sub(r"\\\((.+?)\\\)", _fimg, text)          # \(...\) 行内
+        text = _re.sub(r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)", _fimg, text)  # $...$ 行内
         return text
+
+    def _add_display_formula(latex: str):
+        """渲染行间公式（含 aligned 多行）为图片堆叠。
+
+        matplotlib mathtext 不支持 \\begin{aligned}/&/\\\\/\\text，需预处理：
+        去对齐符 &、\\text -> \\mathrm、按 \\\\ 拆成多行各自渲染。
+        """
+        ltx = latex.replace(r"\begin{aligned}", "").replace(r"\end{aligned}", "")
+        ltx = ltx.replace(r"&", "")
+        ltx = _re.sub(r"\\text\{[^}]*\}", "", ltx)  # 去 \text{...}（mathtext 不支持中文标注，说明在正文）
+        parts = [p.strip() for p in _re.split(r"\\\\", ltx) if p.strip()]
+        story.append(Spacer(1, 4))
+        for part in parts:
+            try:
+                p = _formula_png(part, fontsize=12)
+                img_f = Image(p, width=8 * cm, height=1.5 * cm)
+                img_f._restrictSize(12 * cm, 3 * cm)
+                story.append(img_f)
+            except Exception:
+                story.append(Paragraph(escape(part), styles["code"]))
+        story.append(Spacer(1, 6))
 
     cn_font = "SimFang" if "SimFang" in pdfmetrics.getRegisteredFontNames() else "Helvetica"
     he_font = "SimHei" if "SimHei" in pdfmetrics.getRegisteredFontNames() else cn_font
@@ -260,6 +316,8 @@ def _paper_to_pdf(paper_md: str, figures_dir) -> "io.BytesIO":
     story = []
     in_code = False
     code_buf: list[str] = []
+    in_disp = False      # \[ ... \] 行间公式块（跨行）
+    disp_buf: list[str] = []
     for line in paper_md.split("\n"):
         if line.strip().startswith("```"):
             if in_code:
@@ -273,7 +331,40 @@ def _paper_to_pdf(paper_md: str, figures_dir) -> "io.BytesIO":
         if in_code:
             code_buf.append(line)
             continue
+        # \[ ... \] 行间公式块（跨行收集）
+        if in_disp:
+            if line.strip().startswith("\\]"):
+                _add_display_formula("\n".join(disp_buf))
+                disp_buf = []
+                in_disp = False
+            else:
+                disp_buf.append(line)
+            continue
+        st = line.strip()
+        if st.startswith("\\["):
+            rest = st[2:].strip()
+            if rest.endswith("\\]") and len(rest) > 2:
+                _add_display_formula(rest[:-2].strip())
+            else:
+                in_disp = True
+                if rest:
+                    disp_buf.append(rest)
+            continue
         s = line.rstrip()
+        st_strip = s.strip()
+        # 行间公式 $$...$$（独立行）
+        if st_strip.startswith("$$") and st_strip.endswith("$$") and len(st_strip) > 4:
+            latex = st_strip[2:-2]
+            try:
+                fp_ = _formula_png(latex, fontsize=12)
+                img_f = Image(fp_, width=8 * cm, height=2 * cm)
+                img_f._restrictSize(12 * cm, 4 * cm)
+                story.append(Spacer(1, 4))
+                story.append(img_f)
+                story.append(Spacer(1, 6))
+            except Exception:
+                story.append(Paragraph(_inline(s), styles["body"]))
+            continue
         if s.startswith("# "):
             story.append(Paragraph(_inline(s[2:]), styles["h1"]))
         elif s.startswith("## "):
@@ -298,6 +389,8 @@ def _paper_to_pdf(paper_md: str, figures_dir) -> "io.BytesIO":
             story.append(Spacer(1, 4))
     if in_code and code_buf:
         story.append(Preformatted(escape("\n".join(code_buf)), styles["code"]))
+    if in_disp and disp_buf:
+        _add_display_formula("\n".join(disp_buf))
     doc.build(story)
     buf.seek(0)
     return buf
