@@ -119,8 +119,13 @@ class WriterAgent(BaseAgent):
                 for sid, title, mc in self.SECTIONS]
 
     def _facts(self, ctx) -> str:
-        """总结师的事实清单（写作的权威数据源，含已核对的数值/结论/图/一致性）。"""
-        return ctx.artifacts.get(AgentName.SUMMARIZER.value, "") or ""
+        """写作的权威数据源：优先总结师事实清单(已核对)；无总结师(消融)时回退求解原始输出。
+        回退路径数值未清洗，编造风险更高--正是 E2 消融要量化的对象。
+        """
+        facts = ctx.artifacts.get(AgentName.SUMMARIZER.value, "") or ""
+        if facts:
+            return facts
+        return ctx.solution_stdout or ""
 
     def _section_context(self, ctx, section) -> str:
         sid = section["id"]

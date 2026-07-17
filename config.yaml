@@ -108,9 +108,18 @@ agent_models:
   reviewer: "deepseek-v4-pro"     # 审查
 
 # ===================================================================
+# 流水线配置（消融实验用）
+# ===================================================================
+pipeline:
+  # 跳过总结师(事实清单)：true 时写作直接读求解原始输出(消融基线, 编造风险更高)
+  skip_summarizer: false
+
+# ===================================================================
 # 求解 Agent 代码执行配置
 # ===================================================================
 solver:
+  # 求解架构：staged=分阶段(规划+逐阶段+分层校验, 默认) / monolithic=单体脚本(消融基线)
+  architecture: "staged"
   execution_timeout: 60
   stage_execution_timeout: 120
   workdir: "artifacts/solution"
@@ -119,6 +128,7 @@ solver:
   max_critique_retries: 1
   max_regen_per_stage: 3
   self_critique_model: null
+  self_critique_enabled: true      # false 时跳过 LLM 自查(E3 消融)
   allowed_packages:
     - numpy
     - pandas

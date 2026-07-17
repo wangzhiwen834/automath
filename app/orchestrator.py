@@ -116,6 +116,19 @@ class Orchestrator:
 
         while idx < len(AGENT_ORDER):
             agent_name = AGENT_ORDER[idx]
+            # 消融：可跳过总结师(写作直接读求解原始输出，编造风险更高)
+            if (agent_name == AgentName.SUMMARIZER
+                    and get_settings().pipeline_config.get("skip_summarizer", False)):
+                rec = task.state.get_agent(agent_name)
+                rec.status = AgentStatus.SKIPPED
+                self.store.add_history(task, "skipped", agent=agent_name.value, detail="消融跳过")
+                self.store.save(task)
+                self._emit({"type": "agent_skipped", "agent": agent_name.value})
+                idx += 1
+                task.state.current_agent = (
+                    AGENT_ORDER[idx] if idx < len(AGENT_ORDER) else None
+                )
+                continue
             fb = next_feedback
             next_feedback = None  # 只消费一次
 

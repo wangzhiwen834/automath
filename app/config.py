@@ -61,6 +61,7 @@ class Settings:
         self.solver_config: dict[str, Any] = self._raw.get("solver", {})
         self.reviewer_config: dict[str, Any] = self._raw.get("reviewer", {})
         self.writer_config: dict[str, Any] = self._raw.get("writer", {})
+        self.pipeline_config: dict[str, Any] = self._raw.get("pipeline", {})
 
     def _resolve_workspace(self) -> Path:
         ws = self._raw.get("workspace_dir", "./workspace")

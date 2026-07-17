@@ -309,6 +309,80 @@ class SolverAgent(BaseAgent):
         self.store.append_log(tid, self.name.value, {"type": "delta", "text": text})
 
     def _execute(self, ctx, stream_callback) -> tuple[str, str, dict]:
+        """求解入口：按 solver.architecture 分派。
+        - staged(默认)：规划 + 逐子问题逐阶段 + 分层校验 + 汇总自查
+        - monolithic(消融基线)：一次生成单体脚本，无分阶段校验/自查
+        """
+        cfg = get_settings().solver_config
+        if cfg.get("architecture", "staged") == "monolithic":
+            return self._execute_monolithic(ctx, stream_callback)
+        return self._execute_staged(ctx, stream_callback)
+
+    # ----------------------------------------------------------
+    # 单体求解(消融基线)：一次生成一个脚本，无规划/分层校验/自查
+    # ----------------------------------------------------------
+    def _gen_monolithic_code(self, ctx) -> str:
+        return extract_python(self.llm.chat([Message("system", self.system_prompt),
+                                             Message("user", self.build_user_prompt(ctx))]))
+
+    def _execute_monolithic(self, ctx, stream_callback) -> tuple[str, str, dict]:
+        tid = self.task.meta.task_id
+        cfg = get_settings().solver_config
+        timeout = cfg.get("stage_execution_timeout", 120)
+        seed = cfg.get("preamble_seed", 42)
+        sub_dir = self.store.subproblem_dir(tid, "sub1")
+        fig_dir = self.store.figures_dir(tid)
+
+        self._emit_progress(tid, stream_callback, "[monolithic] 生成单体求解脚本...\n")
+        code = inject_preamble(self._gen_monolithic_code(ctx), seed=seed)
+        script = sub_dir / "solve.py"
+        script.write_text(code, encoding="utf-8")
+
+        executed = False
+        stdout = ""
+        try:
+            py_compile.compile(str(script), doraise=True)
+        except (py_compile.PyCompileError, SyntaxError) as e:
+            stdout = f"[语法错误] {e}"
+            self.store.append_log(tid, self.name.value, {"type": "syntax_error", "error": str(e)[:800]})
+        else:
+            out, stderr, ok = self._exec_script(script, sub_dir, timeout)
+            stdout = out
+            if not ok:
+                self.store.append_log(tid, self.name.value, {"type": "exec_error", "error": (stderr or "执行返回非零退出码")[:1500]})
+            else:
+                self._collect_figures(sub_dir, fig_dir)
+                sr = parse_stage_result(stdout)
+                # 有 STAGE_RESULT 时以其 ok 为准；无则按退出码 0 判定
+                executed = True if sr is None else bool(sr.get("ok", True))
+
+        self._emit_progress(tid, stream_callback, f"--- solve.py ---\n{code}\n")
+        shown = stdout[:1000] + ("\n... (执行输出截断)" if len(stdout) > 1000 else "")
+        self._emit_progress(tid, stream_callback, f"--- 执行输出 ---\n{shown}\n")
+        self._emit_progress(tid, stream_callback, f"[monolithic] {'OK' if executed else 'FAIL'}\n\n")
+
+        status = {"executed": executed,
+                  "subproblems": [{"id": "sub1", "critical_stage": "solve", "ok": executed,
+                                   "stages": [{"name": "solve", "ok": executed}]}],
+                  "error": None if executed else "单体脚本执行失败"}
+        self.store.write_solution_output(tid, stdout, "")
+        self.store.write_solution_file(tid, "status.json", json.dumps(status, ensure_ascii=False, indent=2))
+        self.store.write_solution_file(tid, "summary.md", f"# 单体求解\n\nexecuted={executed}\n")
+
+        ctx.solution_stdout = stdout if executed else None
+        ctx.solution_stderr = ""
+        ctx.solution_executed = executed
+        ctx.solution_error = status.get("error")
+        ctx.figures = self.store.list_figures(tid)
+
+        manifest = {"executed": executed, "subproblems": status["subproblems"], "figures": ctx.figures}
+        summary = f"单体求解{'成功' if executed else '失败'}，{len(ctx.figures)} 张图"
+        return json.dumps(manifest, ensure_ascii=False, indent=2), summary, {"executed": executed, "figures": ctx.figures}
+
+    # ----------------------------------------------------------
+    # 编排：计划 -> 逐阶段执行 + 自查有界返修 -> 汇总 -> manifest + ctx
+    # ----------------------------------------------------------
+    def _execute_staged(self, ctx, stream_callback) -> tuple[str, str, dict]:
         tid = self.task.meta.task_id
         cfg = get_settings().solver_config
         max_critique = cfg.get("max_critique_retries", 1)
@@ -322,8 +396,8 @@ class SolverAgent(BaseAgent):
             for stage in sub["stages"]:
                 self._emit_progress(tid, stream_callback, f"[{sub['id']}/{stage['name']}] 开始\n")
                 out = self._run_stage(ctx, sub, stage)
-                # 自查 + 有界返修
-                if out["ok"]:
+                # 自查 + 有界返修（self_critique_enabled=false 时跳过，E3 消融用）
+                if out["ok"] and cfg.get("self_critique_enabled", True):
                     for _ in range(max_critique + 1):
                         crit = self._self_critique_stage(sub, stage, out["code"], out["stage_result"])
                         if crit.get("passed"):
